@@ -8,6 +8,8 @@ use std::{
 };
 use tokio::task::spawn_blocking;
 
+use crate::gui::LoadedEntries;
+
 #[derive(Default, Debug, Clone)]
 pub enum Unit {
     #[default]
@@ -19,7 +21,7 @@ pub enum Unit {
 
 #[derive(Default, Debug, Clone)]
 pub struct Scalar {
-    pub value: u32,
+    pub value: u64,
     pub unit: Unit,
 }
 impl std::fmt::Display for Unit {
@@ -36,24 +38,24 @@ impl std::fmt::Display for Unit {
 
 fn to_appropriate_unit(size_in_bytes: u64) -> Scalar {
     let n = size_in_bytes;
-    if n <= 50_000 {
+    if n <= 25_000 {
         return Scalar {
-            value: n as u32,
+            value: n,
             unit: Unit::B,
         };
-    } else if n > 50_000 && n <= 1_000_000 {
+    } else if n > 25_000 && n <= 1_000_000 {
         return Scalar {
-            value: (n / 1000) as u32,
+            value: (n / 1000) as u64,
             unit: Unit::KB,
         };
     } else if n > 1_000_000 && n <= 1_000_000_000 {
         return Scalar {
-            value: (n / 1_000_000) as u32,
+            value: (n / 1_000_000) as u64,
             unit: Unit::MB,
         };
     } else if n > 1_000_000_000 {
         return Scalar {
-            value: (n / 1_000_000_000) as u32,
+            value: (n / 1_000_000_000) as u64,
             unit: Unit::GB,
         };
     } else {
@@ -67,7 +69,25 @@ pub struct DirInfo {
     pub modified: String,
     pub path: PathBuf,
     pub is_dir: bool,
-    pub size: Option<Scalar>,
+    pub size: (String, u64),
+}
+
+impl DirInfo {
+    pub fn new(
+        name: String,
+        modified: String,
+        path: PathBuf,
+        is_dir: bool,
+        size: (String, u64),
+    ) -> Self {
+        Self {
+            name,
+            modified,
+            path,
+            is_dir,
+            size,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +104,6 @@ pub enum CError {
 }
 
 const PARALLEL_THRESHOLD: usize = 64;
-const MAX_RESULTS: usize = 100;
 
 fn process_entries(entries: &[DirEntry], method: &Method) -> Vec<DirInfo> {
     if entries.len() > PARALLEL_THRESHOLD {
@@ -101,44 +120,75 @@ fn process_entries(entries: &[DirEntry], method: &Method) -> Vec<DirInfo> {
 }
 
 fn process_entry(entry: &DirEntry, method: &Method) -> Option<DirInfo> {
-    let name = entry.file_name().to_string_lossy().into_owned();
-    let modified: DateTime<Local> = entry.metadata().ok()?.modified().ok()?.into();
-    let path = entry.path();
-    let is_dir = path.is_dir();
-    let size = if is_dir {
-        None
-    } else {
-        Some(to_appropriate_unit(path.metadata().ok()?.len()))
-    };
-    Some(DirInfo {
-        name: match method {
-            Method::GoTo => name,
-            Method::Search => path.to_string_lossy().into_owned(),
-        },
-        modified: match method {
-            Method::GoTo => modified.format("%Y-%m-%d %H:%M").to_string(),
-            Method::Search => String::new(),
-        },
-        path,
-        is_dir,
-        size,
-    })
+    match method {
+        Method::GoTo => {
+            let metadata = entry.metadata().ok()?;
+            if is_hidden(&entry.file_name().to_string_lossy(), &metadata) {
+                return None;
+            }
+            let is_dir = metadata.is_dir();
+            let name = if is_dir {
+                format!("📁 {}", entry.file_name().to_string_lossy())
+            } else {
+                format!("{}", entry.file_name().to_string_lossy())
+            };
+            let modified: DateTime<Local> = metadata.modified().ok()?.into();
+            let scalar = to_appropriate_unit(metadata.len());
+            let (numerical_size, display_size) = if is_dir {
+                (0, String::new())
+            } else {
+                (metadata.len(), format!("{}{}", scalar.value, scalar.unit))
+            };
+            let path = entry.path();
+            Some(DirInfo::new(
+                name,
+                modified.format("%Y-%m-%d %H-%M").to_string(),
+                path,
+                is_dir,
+                (display_size, numerical_size),
+            ))
+        }
+        Method::Search => {
+            let metadata = entry.metadata().ok()?;
+            let is_dir = metadata.is_dir();
+            let path = entry.path();
+            let name = if is_dir {
+                format!("📁 {}", path.to_string_lossy())
+            } else {
+                entry.path().to_string_lossy().into_owned()
+            };
+            let scalar = to_appropriate_unit(metadata.len());
+            let (numerical_size, display_size) = if is_dir {
+                (0, String::new())
+            } else {
+                (metadata.len(), format!("{}{}", scalar.value, scalar.unit))
+            };
+
+            Some(DirInfo {
+                name,
+                is_dir,
+                size: (display_size, numerical_size),
+                path: path,
+                ..Default::default()
+            })
+        }
+    }
 }
 
-pub fn sync_get_dir(dir: &PathBuf, now: Option<Instant>) -> Result<Vec<DirInfo>, CError> {
-    let entries: Vec<_> = read_dir(dir)
+pub fn sync_get_dir(dir: &PathBuf, now: Option<Instant>) -> Result<LoadedEntries, CError> {
+    let entries: Vec<_> = read_dir(&dir)
         .map_err(|_| CError::ReadDir)?
         .filter_map(|entry| entry.ok())
         .collect();
 
-    let mut dirinfo = vec![DirInfo {
+    let root_dir = DirInfo {
         name: "..".to_string(),
         modified: String::new(),
         path: dir.clone(),
         is_dir: true,
-        size: None,
-    }];
-    dirinfo.extend(process_entries(&entries, &Method::GoTo));
+        ..Default::default()
+    };
+    let dirinfo: Vec<DirInfo> = process_entries(&entries, &Method::GoTo);
 
     if let Some(now) = now {
         println!(
@@ -148,10 +198,13 @@ pub fn sync_get_dir(dir: &PathBuf, now: Option<Instant>) -> Result<Vec<DirInfo>,
             dir.to_string_lossy()
         );
     }
-    Ok(dirinfo)
+
+    let loaded_entires = LoadedEntries::new(root_dir, dirinfo);
+
+    Ok(loaded_entires)
 }
 
-pub async fn get_dir(dir: PathBuf, now: Option<Instant>) -> Result<Vec<DirInfo>, CError> {
+pub async fn get_dir(dir: PathBuf, now: Option<Instant>) -> Result<LoadedEntries, CError> {
     spawn_blocking(move || sync_get_dir(&dir, now))
         .await
         .map_err(|_| CError::Join)?
@@ -186,7 +239,11 @@ fn find_parallel(root: PathBuf, query: &str, found: &AtomicUsize, limit: usize) 
             }
             let path = entry.path();
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            let matches = path.to_string_lossy().to_ascii_lowercase().contains(query);
+            let matches = path
+                .to_string_lossy()
+                .as_bytes()
+                .windows(query.len())
+                .any(|w| w.eq_ignore_ascii_case(query.as_bytes()));
 
             let mut results = vec![];
             if matches {
@@ -208,21 +265,34 @@ pub async fn search_all(
     root: PathBuf,
     previous_dir: DirInfo,
     max_results: usize,
-) -> Vec<DirInfo> {
+) -> LoadedEntries {
     spawn_blocking(move || {
         if query.trim().is_empty() {
-            return vec![previous_dir];
+            return LoadedEntries::new(DirInfo::default(), vec![previous_dir]);
         }
-        let mut filler_entry = vec![previous_dir];
+
         let entries = find_parallel(
             root,
-            &query.to_ascii_lowercase().replace("/", "\\"),
+            &&query.to_ascii_lowercase().replace("/", "\\"),
             &AtomicUsize::new(0),
             max_results,
         );
-        filler_entry.extend(process_entries(&entries, &Method::Search));
-        filler_entry
+        let dir_entries = process_entries(&entries, &Method::Search);
+
+        LoadedEntries::new(previous_dir, dir_entries)
     })
     .await
     .unwrap_or_default()
+}
+
+fn is_hidden(name: &str, metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0 {
+            return true;
+        }
+    }
+    name.starts_with('.')
 }

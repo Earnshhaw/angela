@@ -24,20 +24,50 @@ pub struct State {
     pub max_results: usize,
 }
 
-const MAX_RESULTS_DEFAULT: usize = 50;
+const MAX_RESULTS_DEFAULT: usize = 100;
 
 #[derive(Debug, Clone)]
-enum SearchMethod {
+pub enum SearchMethod {
     FromHomeDirectory(PathBuf),
     FromCustomDirectory,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SortBy {
+    FileType,
+    Name,
+    Size,
+    Date,
+    None,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LoadedEntries {
+    root: DirInfo,
+    entries: Vec<DirInfo>,
+}
+
+impl LoadedEntries {
+    pub fn new(root: DirInfo, entries: Vec<DirInfo>) -> Self {
+        Self { root, entries }
+    }
+
+    pub fn root(&self) -> &DirInfo {
+        &self.root
+    }
+
+    pub fn entries(&self) -> &[DirInfo] {
+        &self.entries
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Tab {
-    pub loaded_entries: Vec<DirInfo>,
+    pub loaded_entries: LoadedEntries,
     pub current_path: PathBuf,
     pub search_field: String,
     pub search_results_displayed: bool,
+    pub sorted_by: SortBy,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +98,7 @@ pub enum Message {
     GoBack,
     UpdatePath(String),
     OpenFile(GoToMethod),
-    UpdateContent(Result<Vec<DirInfo>, CError>),
+    UpdateContent(Result<LoadedEntries, CError>),
     TabOp(TabOps),
     ContextMenuAction(usize, EntryAction),
     DeleteDone,
@@ -76,10 +106,11 @@ pub enum Message {
     SearchEverything,
     ToggleSettings,
     SettingsAction(SettingsAction),
+    SortBy(SortBy),
 }
 
 #[derive(Debug, Clone)]
-enum SettingsAction {
+pub enum SettingsAction {
     ChangeTheme(Theme),
     ChangeSearchMethod(SearchMethod),
     ChangeMatchLimit(usize),
@@ -113,8 +144,17 @@ impl State {
 }
 
 impl Tab {
-    fn self_entry(&self) -> Option<&DirInfo> {
-        self.loaded_entries.first()
+    fn root_entry(&self) -> &DirInfo {
+        &self.loaded_entries.root
+    }
+    fn root_entry_mut(&mut self) -> &mut DirInfo {
+        &mut self.loaded_entries.root
+    }
+    fn entries_mut(&mut self) -> &mut [DirInfo] {
+        &mut self.loaded_entries.entries
+    }
+    fn entries(&self) -> &[DirInfo] {
+        &self.loaded_entries.entries
     }
 }
 
@@ -152,6 +192,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SearchEverything => search_everything(state),
         Message::ToggleSettings => toggle_settings(state),
         Message::SettingsAction(action) => settings_action(state, action),
+        Message::SortBy(sortmethod) => sort_by(state, sortmethod),
     }
 }
 
@@ -169,6 +210,7 @@ pub fn boot() -> State {
         current_path: home.clone(),
         search_field: String::new(),
         search_results_displayed: false,
+        sorted_by: SortBy::None,
     }];
     State {
         panes,
@@ -184,7 +226,6 @@ pub fn boot() -> State {
 
 fn tab_bar_view(state: &State) -> Element<'_, Message> {
     let tabs = state.tabs.iter().enumerate().fold(row![], |row, (i, tab)| {
-        let id = format!("dropzone_{}", i);
         let label = button(text(
             tab.current_path
                 .file_name()
@@ -258,21 +299,15 @@ fn sidebar_view<'a>(state: &State) -> Element<'a, Message> {
 }
 
 fn file_view(state: &State) -> Element<'_, Message> {
-    let current_tab = state.current_tab();
-    // entry 0 is a sentinel representing this directory itself, therefore it is skipped for display
-    let list_of_entries = scrollable(current_tab.loaded_entries.iter().enumerate().skip(1).fold(
+    let entries = state.current_tab().entries();
+
+    let list_of_entries = scrollable(entries.iter().enumerate().fold(
         column![],
         |column, (index, entry)| {
-            let maybe_dir = if entry.is_dir { "📁" } else { "" };
-            let size = if let Some(size) = &entry.size {
-                format!("{} {}", size.value, size.unit)
-            } else {
-                String::new()
-            };
             let entry_row = row![
-                text(format!("{}{}", maybe_dir, entry.name)).width(Length::FillPortion(4)),
+                text(&entry.name).width(Length::FillPortion(4)),
                 text(&entry.modified).width(Length::FillPortion(2)),
-                text(size).width(Length::FillPortion(1))
+                text(&entry.size.0).width(Length::FillPortion(1))
             ]
             .spacing(50)
             .align_y(iced::Alignment::Center);
@@ -310,23 +345,64 @@ fn file_view(state: &State) -> Element<'_, Message> {
         },
     ))
     .style(scrollable_style)
-    .width(Length::Fill);
+    .width(Length::Fill)
+    .height(Length::Fill);
 
-    let path_display = text_input("", &current_tab.current_path.to_string_lossy())
+    let path_display = text_input("", &state.current_tab().current_path.to_string_lossy())
         .style(text_input_style)
         .on_input(Message::UpdatePath)
         .on_submit(Message::GoToDir(GoToMethod::Path(
-            current_tab.current_path.clone(),
+            state.current_tab().current_path.clone(),
         )));
     let back_button = button("<-")
         .on_press(Message::GoBack)
         .style(secondary_button);
-
-    column![
-        tab_bar_view(state),
-        row![back_button, path_display],
-        list_of_entries
+    let sorting_options = row![
+        button("Type")
+            .on_press(Message::SortBy(SortBy::FileType))
+            .style(if state.current_tab().sorted_by == SortBy::FileType {
+                sort_button_active
+            } else {
+                sort_button_inactive
+            })
+            .width(Length::FillPortion(1)),
+        button("Name")
+            .on_press(Message::SortBy(SortBy::Name))
+            .style(if state.current_tab().sorted_by == SortBy::Name {
+                sort_button_active
+            } else {
+                sort_button_inactive
+            })
+            .width(Length::FillPortion(6)),
+        button("Date")
+            .on_press(Message::SortBy(SortBy::Date))
+            .style(if state.current_tab().sorted_by == SortBy::Date {
+                sort_button_active
+            } else {
+                sort_button_inactive
+            })
+            .width(Length::FillPortion(4)),
+        button("Size")
+            .on_press(Message::SortBy(SortBy::Size))
+            .style(if state.current_tab().sorted_by == SortBy::Size {
+                sort_button_active
+            } else {
+                sort_button_inactive
+            })
+            .width(Length::FillPortion(3))
     ]
+    .width(Length::Fill);
+
+    container(
+        column![
+            tab_bar_view(state),
+            row![back_button, path_display],
+            sorting_options,
+            list_of_entries
+        ]
+        .spacing(4),
+    )
+    .height(Length::Fixed(32.0))
     .into()
 }
 
@@ -335,10 +411,11 @@ fn tab_ops(state: &mut State, ops: TabOps) -> Task<Message> {
         TabOps::NewTab => {
             let home = state.home_dir.clone();
             state.tabs.push(Tab {
-                loaded_entries: Vec::new(),
+                loaded_entries: LoadedEntries::default(),
                 current_path: home.clone(),
                 search_field: String::new(),
                 search_results_displayed: false,
+                sorted_by: SortBy::None,
             });
             state.current_tab = state.tabs.len() - 1;
             Task::done(Message::GoToDir(GoToMethod::Path(home)))
@@ -373,14 +450,14 @@ fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
             Message::UpdateContent,
         ),
         GoToMethod::Index(index) => {
-            let path = state.current_tab().loaded_entries[index].path.clone();
+            let path = state.current_tab().entries()[index].path.clone();
             Task::perform(
                 async move { get_dir(path, None).await },
                 Message::UpdateContent,
             )
         }
         GoToMethod::Reload => {
-            let path = state.current_tab().self_entry().unwrap().path.clone();
+            let path = state.current_tab().root_entry().path.clone();
 
             Task::perform(
                 async move { get_dir(path, None).await },
@@ -390,13 +467,10 @@ fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
     }
 }
 
-fn update_content(state: &mut State, res: Result<Vec<DirInfo>, CError>) -> Task<Message> {
+fn update_content(state: &mut State, res: Result<LoadedEntries, CError>) -> Task<Message> {
     if let Ok(result) = res {
-        if let Some(first) = result.first() {
-            println!("Some");
-            state.current_tab_mut().current_path = first.path.clone();
-            state.current_tab_mut().loaded_entries = result;
-        }
+        state.current_tab_mut().current_path = result.root().path.clone();
+        state.current_tab_mut().loaded_entries = result;
     }
     Task::none()
 }
@@ -408,14 +482,7 @@ fn go_back(state: &mut State) -> Task<Message> {
             Task::done(Message::GoToDir(GoToMethod::Reload))
         }
         false => {
-            if state
-                .current_tab_mut()
-                .loaded_entries
-                .first_mut()
-                .unwrap()
-                .path
-                .pop()
-            {
+            if state.current_tab_mut().root_entry_mut().path.pop() {
                 Task::done(Message::GoToDir(GoToMethod::Reload))
             } else {
                 Task::none()
@@ -432,7 +499,7 @@ fn update_path(state: &mut State, path: String) -> Task<Message> {
 fn open_file(state: &mut State, method: GoToMethod) -> Task<Message> {
     match method {
         GoToMethod::Index(index) => {
-            open::that(&state.current_tab().loaded_entries[index].path).unwrap();
+            open::that(&state.current_tab().entries()[index].path).unwrap();
             Task::none()
         }
         GoToMethod::Path(path) => {
@@ -451,21 +518,21 @@ fn pane_resized(state: &mut State, resize_event: pane_grid::ResizeEvent) -> Task
 fn context_menu_action(state: &mut State, index: usize, action: EntryAction) -> Task<Message> {
     match action {
         EntryAction::Open => {
-            if state.current_tab().loaded_entries[index].is_dir {
+            if state.current_tab().entries()[index].is_dir {
                 Task::done(Message::GoToDir(GoToMethod::Index(index)))
             } else {
                 Task::done(Message::OpenFile(GoToMethod::Index(index)))
             }
         }
         EntryAction::Delete => {
-            let path = state.current_tab().loaded_entries[index].path.clone();
+            let path = state.current_tab().entries()[index].path.clone();
             Task::future(async move {
                 delete_dir(path).await.ok();
                 Message::DeleteDone
             })
         }
         EntryAction::CopyAbsolutePath => {
-            let path = state.current_tab().loaded_entries[index].path.clone();
+            let path = state.current_tab().entries()[index].path.clone();
             return iced::clipboard::write(path.to_string_lossy().into_owned());
         }
     }
@@ -477,11 +544,7 @@ fn search_everything_update(state: &mut State, inp: String) -> Task<Message> {
 }
 
 fn search_everything(state: &mut State) -> Task<Message> {
-    let previous_dir = state
-        .current_tab()
-        .self_entry()
-        .cloned()
-        .unwrap_or_default();
+    let previous_dir = state.current_tab().root_entry();
     match &state.search_method {
         SearchMethod::FromHomeDirectory(home) => {
             let query = state.current_tab().search_field.clone();
@@ -583,4 +646,61 @@ fn settings_action(state: &mut State, action: SettingsAction) -> Task<Message> {
 
 pub fn theme(state: &State) -> Theme {
     state.theme.clone()
+}
+
+pub fn sort_by(state: &mut State, sortmethod: SortBy) -> Task<Message> {
+    match sortmethod {
+        SortBy::FileType => match state.current_tab().sorted_by {
+            SortBy::FileType => {
+                state.current_tab_mut().entries_mut().reverse();
+            }
+            _ => {
+                state
+                    .current_tab_mut()
+                    .entries_mut()
+                    .sort_by(|a, b| a.is_dir.cmp(&b.is_dir));
+                state.current_tab_mut().sorted_by = SortBy::FileType;
+            }
+        },
+        SortBy::Date => match state.current_tab().sorted_by {
+            SortBy::Date => {
+                state.current_tab_mut().entries_mut().reverse();
+            }
+            _ => {
+                state
+                    .current_tab_mut()
+                    .entries_mut()
+                    .sort_by(|a, b| a.modified.cmp(&b.modified));
+                state.current_tab_mut().sorted_by = SortBy::Date;
+            }
+        },
+        SortBy::Name => match state.current_tab().sorted_by {
+            SortBy::Name => {
+                state.current_tab_mut().entries_mut().reverse();
+            }
+            _ => {
+                state
+                    .current_tab_mut()
+                    .entries_mut()
+                    .sort_by(|a, b| a.name.cmp(&b.name));
+                state.current_tab_mut().sorted_by = SortBy::Name;
+            }
+        },
+        SortBy::Size => match state.current_tab().sorted_by {
+            SortBy::Size => {
+                state.current_tab_mut().entries_mut().reverse();
+            }
+            _ => {
+                state
+                    .current_tab_mut()
+                    .entries_mut()
+                    .sort_by(|a, b| a.size.1.cmp(&b.size.1));
+                state.current_tab_mut().sorted_by = SortBy::Size;
+            }
+        },
+        SortBy::None => {
+            state.current_tab_mut().sorted_by = SortBy::None;
+        }
+    }
+    Task::none()
 }

@@ -3,10 +3,6 @@ use iced::widget::{button, container, pane_grid, scrollable, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
 use iced_aw::context_menu;
 
-// ---------------------------------------------------------------------
-// Rosé Pine
-// ---------------------------------------------------------------------
-
 pub fn rose_pine() -> Theme {
     Theme::custom(
         "Rosé Pine".to_string(),
@@ -21,27 +17,19 @@ pub fn rose_pine() -> Theme {
     )
 }
 
-// ---------------------------------------------------------------------
-// Windows 11 — Dark
-// ---------------------------------------------------------------------
-
 pub fn win11_dark() -> Theme {
     Theme::custom(
         "Win11 Dark".to_string(),
         Palette {
             background: Color::from_rgb8(0x20, 0x20, 0x20),
             text: Color::from_rgb8(0xff, 0xff, 0xff),
-            primary: Color::from_rgb8(0x60, 0xcd, 0xff), // Win11 accent light blue
+            primary: Color::from_rgb8(0x60, 0xcd, 0xff),
             success: Color::from_rgb8(0x6c, 0xcb, 0x5f),
             warning: Color::from_rgb8(0xff, 0xb9, 0x00),
             danger: Color::from_rgb8(0xff, 0x99, 0xa4),
         },
     )
 }
-
-// ---------------------------------------------------------------------
-// Windows 11 — Light
-// ---------------------------------------------------------------------
 
 pub fn win11_light() -> Theme {
     Theme::custom(
@@ -61,10 +49,6 @@ pub fn all_themes() -> Vec<Theme> {
     vec![rose_pine(), win11_dark(), win11_light()]
 }
 
-// ---- buttons -----------------------------------------------------------
-
-/// Primary button — used for the active tab, the "+" new-tab button,
-/// and any call-to-action buttons.
 pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
 
@@ -104,8 +88,6 @@ pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Secondary button — used for inactive tabs, sidebar shortcut buttons,
-/// context-menu items, and the back button.
 pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
 
@@ -145,8 +127,6 @@ pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style 
     }
 }
 
-/// Borderless row button — used for entries in the file list, so the
-/// whole row highlights on hover without a visible button outline.
 pub fn row_button(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
 
@@ -176,7 +156,6 @@ pub fn row_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Danger button — reserved for destructive context-menu actions (Delete).
 pub fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
 
@@ -214,9 +193,6 @@ pub fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-// ---- text_input ----------------------------------------------------------
-
-/// Used for the search bar and the editable path bar.
 pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let palette = theme.extended_palette();
 
@@ -263,9 +239,6 @@ pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input
     }
 }
 
-// ---- container -------------------------------------------------------
-
-/// Base container fill — used for the sidebar and file-view panes.
 pub fn pane_container(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
 
@@ -304,8 +277,6 @@ pub fn menu_container(
         background: Background::Color(palette.background.strong.color),
     }
 }
-
-// ---- scrollable -----------------------------------------------------
 
 pub fn scrollable_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
     let palette = theme.extended_palette();
@@ -381,8 +352,6 @@ pub fn scrollable_style(theme: &Theme, status: scrollable::Status) -> scrollable
     }
 }
 
-// ---- pane_grid --------------------------------------------------------
-
 pub fn pane_grid_style(theme: &Theme) -> pane_grid::Style {
     let palette = theme.extended_palette();
 
@@ -406,5 +375,45 @@ pub fn pane_grid_style(theme: &Theme) -> pane_grid::Style {
             color: palette.primary.weak.color,
             width: 2.0,
         },
+    }
+}
+
+pub fn sort_button_active(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let base = button::Style {
+        background: Some(palette.primary.strong.color.into()),
+        text_color: palette.primary.strong.text,
+        border: iced::Border {
+            radius: 0.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(palette.primary.base.color.into()),
+            ..base
+        },
+        _ => base,
+    }
+}
+
+pub fn sort_button_inactive(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let base = button::Style {
+        background: Some(palette.background.weak.color.into()),
+        text_color: palette.background.weak.text,
+        border: iced::Border {
+            radius: 0.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(palette.background.strong.color.into()),
+            ..base
+        },
+        _ => base,
     }
 }
