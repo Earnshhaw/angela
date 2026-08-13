@@ -1,6 +1,7 @@
 use iced::theme::Palette;
 use iced::widget::{button, container, pane_grid, scrollable, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
+use iced_aw::context_menu;
 
 // ---------------------------------------------------------------------
 // Rosé Pine
@@ -293,26 +294,14 @@ pub fn sidebar_container(theme: &Theme) -> container::Style {
     }
 }
 
-pub fn menu_container(theme: &Theme) -> container::Style {
+pub fn menu_container(
+    theme: &Theme,
+    _status: context_menu::Status,
+) -> iced_aw::context_menu::Style {
     let palette = theme.extended_palette();
 
-    container::Style {
-        text_color: Some(palette.background.base.text),
-        background: Some(Background::Color(palette.background.strong.color)),
-        border: Border {
-            radius: 6.0.into(),
-            width: 1.0,
-            color: palette.background.strong.color,
-        },
-        shadow: Shadow {
-            color: Color {
-                a: 0.35,
-                ..Color::BLACK
-            },
-            offset: iced::Vector::new(0.0, 4.0),
-            blur_radius: 12.0,
-        },
-        snap: true,
+    context_menu::Style {
+        background: Background::Color(palette.background.strong.color),
     }
 }
 

@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use std::{
     fs::{DirEntry, read_dir},
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
 };
 use tokio::task::spawn_blocking;
@@ -84,22 +84,23 @@ pub enum CError {
 }
 
 const PARALLEL_THRESHOLD: usize = 64;
+const MAX_RESULTS: usize = 100;
 
-fn process_entries(entries: &[DirEntry], method: Method) -> Vec<DirInfo> {
+fn process_entries(entries: &[DirEntry], method: &Method) -> Vec<DirInfo> {
     if entries.len() > PARALLEL_THRESHOLD {
         entries
             .par_iter()
-            .filter_map(|entry| process_entry(entry, method.clone()))
+            .filter_map(|entry| process_entry(entry, method))
             .collect()
     } else {
         entries
             .iter()
-            .filter_map(|entry| process_entry(entry, method.clone()))
+            .filter_map(|entry| process_entry(entry, method))
             .collect()
     }
 }
 
-fn process_entry(entry: &DirEntry, method: Method) -> Option<DirInfo> {
+fn process_entry(entry: &DirEntry, method: &Method) -> Option<DirInfo> {
     let name = entry.file_name().to_string_lossy().into_owned();
     let modified: DateTime<Local> = entry.metadata().ok()?.modified().ok()?.into();
     let path = entry.path();
@@ -137,7 +138,7 @@ pub fn sync_get_dir(dir: &PathBuf, now: Option<Instant>) -> Result<Vec<DirInfo>,
         is_dir: true,
         size: None,
     }];
-    dirinfo.extend(process_entries(&entries, Method::GoTo));
+    dirinfo.extend(process_entries(&entries, &Method::GoTo));
 
     if let Some(now) = now {
         println!(
@@ -166,7 +167,11 @@ fn sync_delete_dir(dir: &PathBuf) -> Result<(), CError> {
     trash::delete(dir).map_err(|_| CError::Trash)
 }
 
-fn find_parallel(root: PathBuf, query: Arc<String>) -> Vec<DirEntry> {
+fn find_parallel(root: PathBuf, query: &str, found: &AtomicUsize, limit: usize) -> Vec<DirEntry> {
+    if found.load(Ordering::Relaxed) >= limit {
+        return vec![];
+    }
+
     let Ok(entries) = read_dir(root) else {
         return vec![];
     };
@@ -175,33 +180,47 @@ fn find_parallel(root: PathBuf, query: Arc<String>) -> Vec<DirEntry> {
     entries
         .into_par_iter()
         .flat_map_iter(|entry| {
+            let count = found.load(Ordering::Relaxed);
+            if count >= limit {
+                return vec![];
+            }
             let path = entry.path();
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            let matches = path
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .contains(&*query);
+            let matches = path.to_string_lossy().to_ascii_lowercase().contains(query);
 
-            let mut found = vec![];
+            let mut results = vec![];
             if matches {
-                found.push(entry);
+                found.fetch_add(1, Ordering::Relaxed);
+                results.push(entry);
             }
+
             if is_dir {
-                found.extend(find_parallel(path, Arc::clone(&query)));
+                results.extend(find_parallel(path, query, found, limit));
             }
-            found
+
+            results
         })
         .collect()
 }
 
-pub async fn search_all(query: String, root: PathBuf, previous_dir: DirInfo) -> Vec<DirInfo> {
+pub async fn search_all(
+    query: String,
+    root: PathBuf,
+    previous_dir: DirInfo,
+    max_results: usize,
+) -> Vec<DirInfo> {
     spawn_blocking(move || {
         if query.trim().is_empty() {
             return vec![previous_dir];
         }
         let mut filler_entry = vec![previous_dir];
-        let entries = find_parallel(root, Arc::new(query.replace("/", "\\")));
-        filler_entry.extend(process_entries(&entries, Method::Search));
+        let entries = find_parallel(
+            root,
+            &query.to_ascii_lowercase().replace("/", "\\"),
+            &AtomicUsize::new(0),
+            max_results,
+        );
+        filler_entry.extend(process_entries(&entries, &Method::Search));
         filler_entry
     })
     .await

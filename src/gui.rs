@@ -1,25 +1,10 @@
-use crate::fs_handling::DirInfo;
-use crate::fs_handling::delete_dir;
-use crate::fs_handling::search_all;
-use crate::fs_handling::sync_get_dir;
-use crate::fs_handling::{CError, get_dir};
+use crate::fs_handling::*;
 use crate::gui::Message::SearchEverythingUpdate;
-use crate::style::danger_button;
-use crate::style::menu_container;
-use crate::style::pane_grid_style;
-use crate::style::primary_button;
-use crate::style::rose_pine;
-use crate::style::row_button;
-use crate::style::scrollable_style;
-use crate::style::secondary_button;
-use crate::style::sidebar_container;
-use crate::style::text_input_style;
-use iced::Point;
-use iced::Rectangle;
-use iced::Theme;
+use crate::style::*;
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{button, text};
+use iced::widget::{Space, button, center, mouse_area, opaque, stack, text};
+use iced::{Color, Theme};
 use iced::{
     Element, Length, Task,
     widget::{column, container, row, scrollable, text_input},
@@ -35,12 +20,16 @@ pub struct State {
     pub home_dir: PathBuf,
     pub search_method: SearchMethod,
     pub theme: Theme,
+    pub settings_open: bool,
+    pub max_results: usize,
 }
+
+const MAX_RESULTS_DEFAULT: usize = 50;
 
 #[derive(Debug, Clone)]
 enum SearchMethod {
     FromHomeDirectory(PathBuf),
-    FromEntireDisk,
+    FromCustomDirectory,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +58,7 @@ pub enum TabOps {
     NewTab,
     SwitchTab(usize),
     CloseTab(usize),
+    CloseAllTabs,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +74,15 @@ pub enum Message {
     DeleteDone,
     SearchEverythingUpdate(String),
     SearchEverything,
+    ToggleSettings,
+    SettingsAction(SettingsAction),
+}
+
+#[derive(Debug, Clone)]
+enum SettingsAction {
+    ChangeTheme(Theme),
+    ChangeSearchMethod(SearchMethod),
+    ChangeMatchLimit(usize),
 }
 
 const SHORTCUTS: [(&str, &str); 6] = [
@@ -120,7 +119,7 @@ impl Tab {
 }
 
 pub fn view(state: &State) -> Element<'_, Message> {
-    PaneGrid::new(&state.panes, |_id, pane, _is_maximized| {
+    let pane = PaneGrid::new(&state.panes, |_id, pane, _is_maximized| {
         let content = match pane {
             PaneKind::Sidebar => sidebar_view(state),
             PaneKind::FileView => file_view(state),
@@ -129,8 +128,13 @@ pub fn view(state: &State) -> Element<'_, Message> {
     })
     .on_resize(10, Message::PaneResized)
     .spacing(4)
-    .style(pane_grid_style)
-    .into()
+    .style(pane_grid_style);
+
+    if state.settings_open {
+        modal(pane, settings_panel(state), Message::ToggleSettings)
+    } else {
+        pane.into()
+    }
 }
 
 pub fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -144,9 +148,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PaneResized(resize_event) => pane_resized(state, resize_event),
         Message::ContextMenuAction(index, action) => context_menu_action(state, index, action),
         Message::DeleteDone => Task::done(Message::GoToDir(GoToMethod::Reload)),
-
         SearchEverythingUpdate(inp) => search_everything_update(state, inp),
         Message::SearchEverything => search_everything(state),
+        Message::ToggleSettings => toggle_settings(state),
+        Message::SettingsAction(action) => settings_action(state, action),
     }
 }
 
@@ -171,7 +176,9 @@ pub fn boot() -> State {
         current_tab: 0,
         home_dir: home.clone(),
         search_method: SearchMethod::FromHomeDirectory(home),
-        theme: rose_pine(),
+        theme: win11_dark(),
+        settings_open: false,
+        max_results: MAX_RESULTS_DEFAULT,
     }
 }
 
@@ -192,8 +199,14 @@ fn tab_bar_view(state: &State) -> Element<'_, Message> {
         });
         let with_context = ContextMenu::new(label, move || {
             let close_tab = button("Close").on_press(Message::TabOp(TabOps::CloseTab(i)));
-            row![close_tab].into()
-        });
+            let close_all = button("Close All").on_press(Message::TabOp(TabOps::CloseAllTabs));
+            row![
+                close_tab.style(secondary_button),
+                close_all.style(secondary_button)
+            ]
+            .into()
+        })
+        .style(menu_container);
 
         row.push(with_context)
     });
@@ -232,7 +245,16 @@ fn sidebar_view<'a>(state: &State) -> Element<'a, Message> {
         },
     );
 
-    container(shortcut_buttons).style(sidebar_container).into()
+    let settings_button = button("⚙")
+        .on_press(Message::ToggleSettings)
+        .style(secondary_button);
+    container(column![
+        shortcut_buttons,
+        Space::new().height(Length::Fill),
+        settings_button
+    ])
+    .style(sidebar_container)
+    .into()
 }
 
 fn file_view(state: &State) -> Element<'_, Message> {
@@ -267,10 +289,6 @@ fn file_view(state: &State) -> Element<'_, Message> {
                         .on_press(Message::ContextMenuAction(index, EntryAction::Open))
                         .style(secondary_button)
                         .width(Length::Fill),
-                    button(text("Delete"))
-                        .style(danger_button)
-                        .on_press(Message::ContextMenuAction(index, EntryAction::Delete))
-                        .width(Length::Fill),
                     button(text("Copy Absolute Path"))
                         .style(secondary_button)
                         .on_press(Message::ContextMenuAction(
@@ -278,10 +296,15 @@ fn file_view(state: &State) -> Element<'_, Message> {
                             EntryAction::CopyAbsolutePath
                         ))
                         .width(Length::Fill),
+                    button(text("Delete"))
+                        .style(danger_button)
+                        .on_press(Message::ContextMenuAction(index, EntryAction::Delete))
+                        .width(Length::Fill),
                 ]
                 .width(Length::Fixed(150.0))
                 .into()
-            });
+            })
+            .style(menu_container);
 
             column.push(entry_with_menu)
         },
@@ -332,6 +355,11 @@ fn tab_ops(state: &mut State, ops: TabOps) -> Task<Message> {
                 state.current_tab = state.tabs.len() - 1;
                 Task::done(Message::GoToDir(GoToMethod::Reload))
             }
+        }
+        TabOps::CloseAllTabs => {
+            state.tabs.truncate(1);
+            state.current_tab = 0;
+            Task::done(Message::GoToDir(GoToMethod::Reload))
         }
     }
 }
@@ -459,12 +487,100 @@ fn search_everything(state: &mut State) -> Task<Message> {
             let query = state.current_tab().search_field.clone();
             let root = home.clone();
             let previous_dir = previous_dir.clone();
+            let max_results = state.max_results;
             state.current_tab_mut().search_results_displayed = true;
             Task::perform(
-                async move { search_all(query, root, previous_dir).await },
+                async move { search_all(query, root, previous_dir, max_results).await },
                 |entries| Message::UpdateContent(Ok(entries)),
             )
         }
-        SearchMethod::FromEntireDisk => Task::none(),
+        SearchMethod::FromCustomDirectory => Task::none(),
     }
+}
+
+pub fn modal<'a>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_dismiss: Message,
+) -> Element<'a, Message> {
+    stack![
+        base.into(),
+        opaque(
+            mouse_area(center(opaque(content)).style(|_theme| {
+                container::Style {
+                    background: Some(
+                        Color {
+                            a: 0.6,
+                            ..Color::BLACK
+                        }
+                        .into(),
+                    ),
+                    ..container::Style::default()
+                }
+            }))
+            .on_press(on_dismiss)
+        )
+    ]
+    .into()
+}
+
+fn toggle_settings(state: &mut State) -> Task<Message> {
+    state.settings_open = !state.settings_open;
+    Task::none()
+}
+
+fn settings_panel(state: &State) -> Element<'_, Message> {
+    container(column![
+        text("Settings").size(20),
+        text("Set Theme"),
+        button("Dark Theme")
+            .on_press(Message::SettingsAction(SettingsAction::ChangeTheme(
+                win11_dark()
+            )))
+            .style(secondary_button),
+        button("Light Theme")
+            .on_press(Message::SettingsAction(SettingsAction::ChangeTheme(
+                win11_light()
+            )))
+            .style(secondary_button),
+        button("Rosé Pine")
+            .on_press(Message::SettingsAction(SettingsAction::ChangeTheme(
+                rose_pine()
+            )))
+            .style(secondary_button),
+        text("Set Maximum Amount of Results in Search"),
+        text_input("", &state.max_results.to_string())
+            .on_input(
+                |value| Message::SettingsAction(SettingsAction::ChangeMatchLimit(
+                    value.parse().unwrap_or(MAX_RESULTS_DEFAULT)
+                ))
+            )
+            .width(Length::Fixed(100.00))
+            .style(text_input_style),
+        text("Set the start directory for the search"),
+        button("Home Directory (Default)")
+            .on_press(Message::SettingsAction(SettingsAction::ChangeSearchMethod(
+                SearchMethod::FromHomeDirectory(state.home_dir.clone())
+            )))
+            .style(secondary_button),
+        button("Custom Directory")
+            .on_press(Message::SettingsAction(SettingsAction::ChangeSearchMethod(
+                SearchMethod::FromCustomDirectory
+            )))
+            .style(secondary_button),
+    ])
+    .into()
+}
+
+fn settings_action(state: &mut State, action: SettingsAction) -> Task<Message> {
+    match action {
+        SettingsAction::ChangeTheme(theme) => state.theme = theme,
+        SettingsAction::ChangeMatchLimit(limit) => state.max_results = limit,
+        SettingsAction::ChangeSearchMethod(method) => state.search_method = method,
+    }
+    Task::none()
+}
+
+pub fn theme(state: &State) -> Theme {
+    state.theme.clone()
 }
