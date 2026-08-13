@@ -444,6 +444,7 @@ fn tab_ops(state: &mut State, ops: TabOps) -> Task<Message> {
 fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
     state.current_tab_mut().search_field.clear();
     state.current_tab_mut().search_results_displayed = false;
+    state.current_tab_mut().sorted_by = SortBy::None;
     match method {
         GoToMethod::Path(path) => Task::perform(
             async move { get_dir(path, None).await },
