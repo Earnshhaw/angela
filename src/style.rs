@@ -1,21 +1,3 @@
-//! Theming for the file explorer.
-//!
-//! Three custom `iced::Theme`s are provided: Rosé Pine, Windows 11 Dark, and
-//! Windows 11 Light. Each is built as an `iced::theme::Palette`, which lets
-//! all of the widget style functions below stay theme-agnostic — they read
-//! colors off `theme.extended_palette()` rather than hardcoding per-theme
-//! branches, so the same `button::primary` / `text_input::style` / etc. work
-//! correctly no matter which of the three themes is active.
-//!
-//! Usage in `gui.rs`:
-//!   state.theme field: `iced::Theme`, initialized to e.g. `style::rose_pine()`
-//!   `button(..).style(style::primary_button)`
-//!   `button(..).style(style::secondary_button)`     // tab bar, sidebar buttons
-//!   `text_input(..).style(style::text_input_style)`
-//!   `container(..).style(style::sidebar_container)`
-//!   `scrollable(..).style(style::scrollable_style)`
-//!   `PaneGrid::new(..).style(style::pane_grid_style)`
-
 use iced::theme::Palette;
 use iced::widget::{button, container, pane_grid, scrollable, text_input};
 use iced::{Background, Border, Color, Shadow, Theme};
@@ -77,10 +59,6 @@ pub fn win11_light() -> Theme {
 pub fn all_themes() -> Vec<Theme> {
     vec![rose_pine(), win11_dark(), win11_light()]
 }
-
-// =======================================================================
-// Widget styles — theme-agnostic, driven off extended_palette()
-// =======================================================================
 
 // ---- buttons -----------------------------------------------------------
 
@@ -299,8 +277,6 @@ pub fn pane_container(theme: &Theme) -> container::Style {
     }
 }
 
-/// Slightly recessed panel — used for the sidebar specifically, so it
-/// reads as visually distinct from the file-view pane.
 pub fn sidebar_container(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
 
@@ -317,8 +293,6 @@ pub fn sidebar_container(theme: &Theme) -> container::Style {
     }
 }
 
-/// Popup/context-menu surface — slightly elevated with a border and a
-/// soft shadow so it reads as floating above the file list.
 pub fn menu_container(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
 
