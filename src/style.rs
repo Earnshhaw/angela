@@ -1,0 +1,447 @@
+//! Theming for the file explorer.
+//!
+//! Three custom `iced::Theme`s are provided: Rosé Pine, Windows 11 Dark, and
+//! Windows 11 Light. Each is built as an `iced::theme::Palette`, which lets
+//! all of the widget style functions below stay theme-agnostic — they read
+//! colors off `theme.extended_palette()` rather than hardcoding per-theme
+//! branches, so the same `button::primary` / `text_input::style` / etc. work
+//! correctly no matter which of the three themes is active.
+//!
+//! Usage in `gui.rs`:
+//!   state.theme field: `iced::Theme`, initialized to e.g. `style::rose_pine()`
+//!   `button(..).style(style::primary_button)`
+//!   `button(..).style(style::secondary_button)`     // tab bar, sidebar buttons
+//!   `text_input(..).style(style::text_input_style)`
+//!   `container(..).style(style::sidebar_container)`
+//!   `scrollable(..).style(style::scrollable_style)`
+//!   `PaneGrid::new(..).style(style::pane_grid_style)`
+
+use iced::theme::Palette;
+use iced::widget::{button, container, pane_grid, scrollable, text_input};
+use iced::{Background, Border, Color, Shadow, Theme};
+
+// ---------------------------------------------------------------------
+// Rosé Pine
+// ---------------------------------------------------------------------
+
+pub fn rose_pine() -> Theme {
+    Theme::custom(
+        "Rosé Pine".to_string(),
+        Palette {
+            background: Color::from_rgb8(0x19, 0x17, 0x24), // base
+            text: Color::from_rgb8(0xe0, 0xde, 0xf4),       // text
+            primary: Color::from_rgb8(0xc4, 0xa7, 0xe7),    // iris
+            success: Color::from_rgb8(0x9c, 0xcf, 0xd8),    // foam
+            warning: Color::from_rgb8(0xf6, 0xc1, 0x77),    // gold
+            danger: Color::from_rgb8(0xeb, 0x6f, 0x92),     // love
+        },
+    )
+}
+
+// ---------------------------------------------------------------------
+// Windows 11 — Dark
+// ---------------------------------------------------------------------
+
+pub fn win11_dark() -> Theme {
+    Theme::custom(
+        "Win11 Dark".to_string(),
+        Palette {
+            background: Color::from_rgb8(0x20, 0x20, 0x20),
+            text: Color::from_rgb8(0xff, 0xff, 0xff),
+            primary: Color::from_rgb8(0x60, 0xcd, 0xff), // Win11 accent light blue
+            success: Color::from_rgb8(0x6c, 0xcb, 0x5f),
+            warning: Color::from_rgb8(0xff, 0xb9, 0x00),
+            danger: Color::from_rgb8(0xff, 0x99, 0xa4),
+        },
+    )
+}
+
+// ---------------------------------------------------------------------
+// Windows 11 — Light
+// ---------------------------------------------------------------------
+
+pub fn win11_light() -> Theme {
+    Theme::custom(
+        "Win11 Light".to_string(),
+        Palette {
+            background: Color::from_rgb8(0xf3, 0xf3, 0xf3),
+            text: Color::from_rgb8(0x1a, 0x1a, 0x1a),
+            primary: Color::from_rgb8(0x00, 0x5f, 0xb8), // Win11 accent blue
+            success: Color::from_rgb8(0x0f, 0x7b, 0x0f),
+            warning: Color::from_rgb8(0x9d, 0x5d, 0x00),
+            danger: Color::from_rgb8(0xc4, 0x2b, 0x1c),
+        },
+    )
+}
+
+pub fn all_themes() -> Vec<Theme> {
+    vec![rose_pine(), win11_dark(), win11_light()]
+}
+
+// =======================================================================
+// Widget styles — theme-agnostic, driven off extended_palette()
+// =======================================================================
+
+// ---- buttons -----------------------------------------------------------
+
+/// Primary button — used for the active tab, the "+" new-tab button,
+/// and any call-to-action buttons.
+pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+
+    let base = button::Style {
+        background: Some(Background::Color(palette.primary.base.color)),
+        text_color: palette.primary.base.text,
+        border: Border {
+            radius: 6.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: true,
+    };
+
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(palette.primary.strong.color)),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(palette.primary.weak.color)),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: Color {
+                a: 0.4,
+                ..base.text_color
+            },
+            background: Some(Background::Color(Color {
+                a: 0.2,
+                ..palette.primary.base.color
+            })),
+            ..base
+        },
+    }
+}
+
+/// Secondary button — used for inactive tabs, sidebar shortcut buttons,
+/// context-menu items, and the back button.
+pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+
+    let base = button::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        text_color: palette.background.base.text,
+        border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: palette.background.strong.color,
+        },
+        shadow: Shadow::default(),
+        snap: true,
+    };
+
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(palette.background.strong.color)),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(palette.primary.weak.color)),
+            border: Border {
+                color: palette.primary.base.color,
+                ..base.border
+            },
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: Color {
+                a: 0.4,
+                ..base.text_color
+            },
+            ..base
+        },
+    }
+}
+
+/// Borderless row button — used for entries in the file list, so the
+/// whole row highlights on hover without a visible button outline.
+pub fn row_button(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+
+    let base = button::Style {
+        background: None,
+        text_color: palette.background.base.text,
+        border: Border {
+            radius: 4.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: true,
+    };
+
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(palette.background.weak.color)),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(palette.primary.weak.color)),
+            ..base
+        },
+        button::Status::Disabled => base,
+    }
+}
+
+/// Danger button — reserved for destructive context-menu actions (Delete).
+pub fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+
+    let base = button::Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        text_color: palette.danger.base.color,
+        border: Border {
+            radius: 4.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: true,
+    };
+
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(palette.danger.base.color)),
+            text_color: palette.danger.base.text,
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(palette.danger.weak.color)),
+            text_color: palette.danger.base.text,
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: Color {
+                a: 0.4,
+                ..base.text_color
+            },
+            ..base
+        },
+    }
+}
+
+// ---- text_input ----------------------------------------------------------
+
+/// Used for the search bar and the editable path bar.
+pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let palette = theme.extended_palette();
+
+    let base = text_input::Style {
+        background: Background::Color(palette.background.weak.color),
+        border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: palette.background.strong.color,
+        },
+        icon: palette.background.base.text,
+        placeholder: Color {
+            a: 0.5,
+            ..palette.background.base.text
+        },
+        value: palette.background.base.text,
+        selection: palette.primary.weak.color,
+    };
+
+    match status {
+        text_input::Status::Active => base,
+        text_input::Status::Hovered => text_input::Style {
+            border: Border {
+                color: palette.primary.weak.color,
+                ..base.border
+            },
+            ..base
+        },
+        text_input::Status::Focused { .. } => text_input::Style {
+            border: Border {
+                color: palette.primary.base.color,
+                ..base.border
+            },
+            ..base
+        },
+        text_input::Status::Disabled => text_input::Style {
+            background: Background::Color(palette.background.weak.color),
+            value: Color {
+                a: 0.4,
+                ..base.value
+            },
+            ..base
+        },
+    }
+}
+
+// ---- container -------------------------------------------------------
+
+/// Base container fill — used for the sidebar and file-view panes.
+pub fn pane_container(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+
+    container::Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(Background::Color(palette.background.base.color)),
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: true,
+    }
+}
+
+/// Slightly recessed panel — used for the sidebar specifically, so it
+/// reads as visually distinct from the file-view pane.
+pub fn sidebar_container(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+
+    container::Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(Background::Color(palette.background.weak.color)),
+        border: Border {
+            radius: 0.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: true,
+    }
+}
+
+/// Popup/context-menu surface — slightly elevated with a border and a
+/// soft shadow so it reads as floating above the file list.
+pub fn menu_container(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+
+    container::Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(Background::Color(palette.background.strong.color)),
+        border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: palette.background.strong.color,
+        },
+        shadow: Shadow {
+            color: Color {
+                a: 0.35,
+                ..Color::BLACK
+            },
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
+        },
+        snap: true,
+    }
+}
+
+// ---- scrollable -----------------------------------------------------
+
+pub fn scrollable_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let palette = theme.extended_palette();
+
+    let rail = scrollable::Rail {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        border: Border::default(),
+        scroller: scrollable::Scroller {
+            background: Background::Color(palette.background.strong.color),
+            border: Border {
+                radius: 4.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+        },
+    };
+
+    let hovered_rail = scrollable::Rail {
+        scroller: scrollable::Scroller {
+            background: Background::Color(palette.primary.base.color),
+            ..rail.scroller
+        },
+        ..rail
+    };
+
+    let auto_scroll = scrollable::AutoScroll {
+        background: Background::Color(palette.background.base.color),
+        border: Border {
+            radius: u32::MAX.into(),
+            width: 1.0,
+            color: palette.background.base.text,
+        },
+        shadow: Shadow {
+            color: Color {
+                a: 0.7,
+                ..Color::BLACK
+            },
+            offset: iced::Vector::ZERO,
+            blur_radius: 2.0,
+        },
+        icon: palette.background.base.text,
+    };
+
+    match status {
+        scrollable::Status::Active { .. } => scrollable::Style {
+            container: pane_container(theme),
+            vertical_rail: rail,
+            horizontal_rail: rail,
+            gap: None,
+            auto_scroll,
+        },
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered,
+            ..
+        } => scrollable::Style {
+            container: pane_container(theme),
+            vertical_rail: if is_vertical_scrollbar_hovered {
+                hovered_rail
+            } else {
+                rail
+            },
+            horizontal_rail: rail,
+            gap: None,
+            auto_scroll,
+        },
+        scrollable::Status::Dragged { .. } => scrollable::Style {
+            container: pane_container(theme),
+            vertical_rail: hovered_rail,
+            horizontal_rail: hovered_rail,
+            gap: None,
+            auto_scroll,
+        },
+    }
+}
+
+// ---- pane_grid --------------------------------------------------------
+
+pub fn pane_grid_style(theme: &Theme) -> pane_grid::Style {
+    let palette = theme.extended_palette();
+
+    pane_grid::Style {
+        hovered_region: pane_grid::Highlight {
+            background: Background::Color(Color {
+                a: 0.15,
+                ..palette.primary.base.color
+            }),
+            border: Border {
+                radius: 6.0.into(),
+                width: 2.0,
+                color: palette.primary.base.color,
+            },
+        },
+        picked_split: pane_grid::Line {
+            color: palette.primary.base.color,
+            width: 2.0,
+        },
+        hovered_split: pane_grid::Line {
+            color: palette.primary.weak.color,
+            width: 2.0,
+        },
+    }
+}
