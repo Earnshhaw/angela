@@ -45,10 +45,6 @@ pub fn win11_light() -> Theme {
     )
 }
 
-pub fn all_themes() -> Vec<Theme> {
-    vec![rose_pine(), win11_dark(), win11_light()]
-}
-
 pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
 
@@ -127,32 +123,27 @@ pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style 
     }
 }
 
-pub fn row_button(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
-
-    let base = button::Style {
-        background: None,
-        text_color: palette.background.base.text,
-        border: Border {
-            radius: 4.0.into(),
-            width: 0.0,
-            color: Color::TRANSPARENT,
-        },
-        shadow: Shadow::default(),
-        snap: true,
-    };
-
-    match status {
-        button::Status::Active => base,
-        button::Status::Hovered => button::Style {
-            background: Some(Background::Color(palette.background.weak.color)),
-            ..base
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(Background::Color(palette.primary.weak.color)),
-            ..base
-        },
-        button::Status::Disabled => base,
+pub fn row_style(is_hovered: bool, is_pressed: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme: &Theme| {
+        let palette = theme.extended_palette();
+        let background = if is_pressed {
+            Some(Background::Color(palette.primary.weak.color))
+        } else if is_hovered {
+            Some(Background::Color(palette.background.weak.color))
+        } else {
+            None
+        };
+        container::Style {
+            text_color: Some(palette.background.base.text),
+            background,
+            border: Border {
+                radius: 4.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: true,
+        }
     }
 }
 

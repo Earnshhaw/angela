@@ -1,3 +1,4 @@
+use crate::gui::LoadedEntries;
 use chrono::{DateTime, Local};
 use rayon::prelude::*;
 use std::{
@@ -7,8 +8,6 @@ use std::{
     time::Instant,
 };
 use tokio::task::spawn_blocking;
-
-use crate::gui::LoadedEntries;
 
 #[derive(Default, Debug, Clone)]
 pub enum Unit {
@@ -101,6 +100,7 @@ pub enum CError {
     ReadDir,
     Join,
     Trash,
+    Move,
 }
 
 const PARALLEL_THRESHOLD: usize = 64;
@@ -123,20 +123,22 @@ fn process_entry(entry: &DirEntry, method: &Method) -> Option<DirInfo> {
     match method {
         Method::GoTo => {
             let metadata = entry.metadata().ok()?;
-            if is_hidden(&entry.file_name().to_string_lossy(), &metadata) {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if is_hidden(&file_name, &metadata) {
                 return None;
             }
             let is_dir = metadata.is_dir();
             let name = if is_dir {
-                format!("📁 {}", entry.file_name().to_string_lossy())
+                format!("📁 {}", file_name)
             } else {
-                format!("{}", entry.file_name().to_string_lossy())
+                format!("{}", file_name)
             };
             let modified: DateTime<Local> = metadata.modified().ok()?.into();
-            let scalar = to_appropriate_unit(metadata.len());
             let (numerical_size, display_size) = if is_dir {
                 (0, String::new())
             } else {
+                let scalar = to_appropriate_unit(metadata.len());
                 (metadata.len(), format!("{}{}", scalar.value, scalar.unit))
             };
             let path = entry.path();
@@ -149,18 +151,21 @@ fn process_entry(entry: &DirEntry, method: &Method) -> Option<DirInfo> {
             ))
         }
         Method::Search => {
+            let file_path = entry.path();
+            let file_path = file_path.to_string_lossy();
             let metadata = entry.metadata().ok()?;
             let is_dir = metadata.is_dir();
             let path = entry.path();
             let name = if is_dir {
-                format!("📁 {}", path.to_string_lossy())
+                format!("📁 {}", file_path)
             } else {
-                entry.path().to_string_lossy().into_owned()
+                file_path.into_owned()
             };
-            let scalar = to_appropriate_unit(metadata.len());
+
             let (numerical_size, display_size) = if is_dir {
                 (0, String::new())
             } else {
+                let scalar = to_appropriate_unit(metadata.len());
                 (metadata.len(), format!("{}{}", scalar.value, scalar.unit))
             };
 
@@ -211,13 +216,9 @@ pub async fn get_dir(dir: PathBuf, now: Option<Instant>) -> Result<LoadedEntries
 }
 
 pub async fn delete_dir(dir: PathBuf) -> Result<(), CError> {
-    spawn_blocking(move || sync_delete_dir(&dir))
+    spawn_blocking(move || trash::delete(&dir).map_err(|_| CError::Trash))
         .await
         .map_err(|_| CError::Join)?
-}
-
-fn sync_delete_dir(dir: &PathBuf) -> Result<(), CError> {
-    trash::delete(dir).map_err(|_| CError::Trash)
 }
 
 fn find_parallel(root: PathBuf, query: &str, found: &AtomicUsize, limit: usize) -> Vec<DirEntry> {
@@ -295,4 +296,20 @@ fn is_hidden(name: &str, metadata: &std::fs::Metadata) -> bool {
         }
     }
     name.starts_with('.')
+}
+
+pub async fn move_entry(source: PathBuf, dest_dir: PathBuf) -> Result<(), CError> {
+    spawn_blocking(move || {
+        let file_name = source.file_name().ok_or(CError::ReadDir)?;
+        let dest = dest_dir.join(file_name);
+        std::fs::rename(&source, &dest).map_err(|_| CError::Move)
+    })
+    .await
+    .map_err(|_| CError::Join)?
+}
+
+pub async fn rename_entry(source: PathBuf, dest: PathBuf) -> Result<(), CError> {
+    spawn_blocking(move || std::fs::rename(&source, &dest).map_err(|_| CError::Move))
+        .await
+        .map_err(|_| CError::Join)?
 }

@@ -1,16 +1,26 @@
+use crate::dragndrop::{
+    DragPayload, DropTarget, cursor_moved, drag_released, hover_target, move_done, press_start,
+};
 use crate::fs_handling::*;
 use crate::gui::Message::SearchEverythingUpdate;
+use crate::rename::{
+    RenameField, rename_done, rename_field_update, rename_go, rename_popup, rename_toggle,
+};
+use crate::search::{SearchMethod, search_everything, search_everything_update};
+use crate::settings::{SettingsAction, settings_action, settings_panel, toggle_settings};
+use crate::sort::{SortBy, sort_by};
 use crate::style::*;
+use crate::tabs::{TabOps, tab_bar_view, tab_ops};
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{Space, button, center, mouse_area, opaque, stack, text};
-use iced::{Color, Theme};
+use iced::widget::{Space, button, center, mouse_area, opaque, operation, stack, text};
+use iced::{Color, Point, Theme};
 use iced::{
     Element, Length, Task,
     widget::{column, container, row, scrollable, text_input},
 };
 use iced_aw::ContextMenu;
-use std::{env::home_dir, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -20,24 +30,18 @@ pub struct State {
     pub home_dir: PathBuf,
     pub search_method: SearchMethod,
     pub theme: Theme,
-    pub settings_open: bool,
     pub max_results: usize,
+    pub dragging: Option<DragPayload>,
+    pub hovered_target: Option<DropTarget>,
+    pub hovered_row: Option<usize>,
+    pub overlay: Overlay,
+    pub rename_field: RenameField,
 }
-
-const MAX_RESULTS_DEFAULT: usize = 100;
 
 #[derive(Debug, Clone)]
-pub enum SearchMethod {
-    FromHomeDirectory(PathBuf),
-    FromCustomDirectory,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SortBy {
-    FileType,
-    Name,
-    Size,
-    Date,
+pub enum Overlay {
+    Settings,
+    Rename,
     None,
 }
 
@@ -51,20 +55,11 @@ impl LoadedEntries {
     pub fn new(root: DirInfo, entries: Vec<DirInfo>) -> Self {
         Self { root, entries }
     }
-
-    pub fn root(&self) -> &DirInfo {
-        &self.root
-    }
-
-    pub fn entries(&self) -> &[DirInfo] {
-        &self.entries
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Tab {
     pub loaded_entries: LoadedEntries,
-    pub current_path: PathBuf,
     pub search_field: String,
     pub search_results_displayed: bool,
     pub sorted_by: SortBy,
@@ -84,14 +79,6 @@ pub enum GoToMethod {
 }
 
 #[derive(Debug, Clone)]
-pub enum TabOps {
-    NewTab,
-    SwitchTab(usize),
-    CloseTab(usize),
-    CloseAllTabs,
-}
-
-#[derive(Debug, Clone)]
 pub enum Message {
     PaneResized(ResizeEvent),
     GoToDir(GoToMethod),
@@ -107,15 +94,21 @@ pub enum Message {
     ToggleSettings,
     SettingsAction(SettingsAction),
     SortBy(SortBy),
+    //////////////
+    CursorMoved(Point),
+    PressStart(usize, bool),
+    DragReleased,
+    HoverTarget(Option<DropTarget>),
+    MoveDone(Result<(), CError>),
+    RowHoverStart(usize, bool),
+    RowHoverEnd,
+    RenameToggle,
+    RenameFieldUpdate(String),
+    RenameGo,
+    RenameDone(Result<(), CError>),
 }
 
-#[derive(Debug, Clone)]
-pub enum SettingsAction {
-    ChangeTheme(Theme),
-    ChangeSearchMethod(SearchMethod),
-    ChangeMatchLimit(usize),
-}
-
+pub const MAX_RESULTS_DEFAULT: usize = 100;
 const SHORTCUTS: [(&str, &str); 6] = [
     ("Documents", "📄 Documents"),
     ("Downloads", "📥 Downloads"),
@@ -124,7 +117,6 @@ const SHORTCUTS: [(&str, &str); 6] = [
     ("Music", "🎵 Music"),
     ("Desktop", "🖥️ Desktop"),
 ];
-
 const HOME_BUTTON: &str = "🏠 Home";
 
 #[derive(Debug, Clone)]
@@ -132,28 +124,30 @@ pub enum EntryAction {
     Open,
     Delete,
     CopyAbsolutePath,
+    OpenFileLocation,
+    Rename,
 }
 
 impl State {
-    fn current_tab(&self) -> &Tab {
+    pub fn current_tab(&self) -> &Tab {
         &self.tabs[self.current_tab]
     }
-    fn current_tab_mut(&mut self) -> &mut Tab {
+    pub fn current_tab_mut(&mut self) -> &mut Tab {
         &mut self.tabs[self.current_tab]
     }
 }
 
 impl Tab {
-    fn root_entry(&self) -> &DirInfo {
+    pub fn root_entry(&self) -> &DirInfo {
         &self.loaded_entries.root
     }
-    fn root_entry_mut(&mut self) -> &mut DirInfo {
+    pub fn root_entry_mut(&mut self) -> &mut DirInfo {
         &mut self.loaded_entries.root
     }
-    fn entries_mut(&mut self) -> &mut [DirInfo] {
+    pub fn entries_mut(&mut self) -> &mut [DirInfo] {
         &mut self.loaded_entries.entries
     }
-    fn entries(&self) -> &[DirInfo] {
+    pub fn entries(&self) -> &[DirInfo] {
         &self.loaded_entries.entries
     }
 }
@@ -170,10 +164,10 @@ pub fn view(state: &State) -> Element<'_, Message> {
     .spacing(4)
     .style(pane_grid_style);
 
-    if state.settings_open {
-        modal(pane, settings_panel(state), Message::ToggleSettings)
-    } else {
-        pane.into()
+    match state.overlay {
+        Overlay::Settings => modal(pane, settings_panel(state), Message::ToggleSettings),
+        Overlay::Rename => modal(pane, rename_popup(state), Message::RenameToggle),
+        Overlay::None => pane.into(),
     }
 }
 
@@ -193,72 +187,18 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ToggleSettings => toggle_settings(state),
         Message::SettingsAction(action) => settings_action(state, action),
         Message::SortBy(sortmethod) => sort_by(state, sortmethod),
+        Message::CursorMoved(pos) => cursor_moved(pos, state),
+        Message::PressStart(index, is_dir) => press_start(index, is_dir, state),
+        Message::DragReleased => drag_released(state),
+        Message::HoverTarget(target) => hover_target(target, state),
+        Message::MoveDone(result) => move_done(result, state),
+        Message::RowHoverStart(index, is_dir) => row_hover_start(state, index, is_dir),
+        Message::RowHoverEnd => row_hover_end(state),
+        Message::RenameToggle => rename_toggle(state),
+        Message::RenameFieldUpdate(field) => rename_field_update(state, field),
+        Message::RenameGo => rename_go(state),
+        Message::RenameDone(res) => rename_done(state, res),
     }
-}
-
-pub fn boot() -> State {
-    let panes = pane_grid::State::with_configuration(pane_grid::Configuration::Split {
-        axis: pane_grid::Axis::Vertical,
-        ratio: 1.0 / 6.0,
-        a: Box::new(pane_grid::Configuration::Pane(PaneKind::Sidebar)),
-        b: Box::new(pane_grid::Configuration::Pane(PaneKind::FileView)),
-    });
-    let home = home_dir().unwrap();
-    let entries = sync_get_dir(&home, None).unwrap();
-    let tabs: Vec<Tab> = vec![Tab {
-        loaded_entries: entries,
-        current_path: home.clone(),
-        search_field: String::new(),
-        search_results_displayed: false,
-        sorted_by: SortBy::None,
-    }];
-    State {
-        panes,
-        tabs,
-        current_tab: 0,
-        home_dir: home.clone(),
-        search_method: SearchMethod::FromHomeDirectory(home),
-        theme: win11_dark(),
-        settings_open: false,
-        max_results: MAX_RESULTS_DEFAULT,
-    }
-}
-
-fn tab_bar_view(state: &State) -> Element<'_, Message> {
-    let tabs = state.tabs.iter().enumerate().fold(row![], |row, (i, tab)| {
-        let label = button(text(
-            tab.current_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("/"),
-        ))
-        .on_press(Message::TabOp(TabOps::SwitchTab(i)))
-        .style(if i == state.current_tab {
-            primary_button
-        } else {
-            secondary_button
-        });
-        let with_context = ContextMenu::new(label, move || {
-            let close_tab = button("Close").on_press(Message::TabOp(TabOps::CloseTab(i)));
-            let close_all = button("Close All").on_press(Message::TabOp(TabOps::CloseAllTabs));
-            row![
-                close_tab.style(secondary_button),
-                close_all.style(secondary_button)
-            ]
-            .into()
-        })
-        .style(menu_container);
-
-        row.push(with_context)
-    });
-
-    let new_tab_button = button(text("+"))
-        .on_press(Message::TabOp(TabOps::NewTab))
-        .style(primary_button);
-
-    container(row![tabs, new_tab_button].spacing(4))
-        .height(Length::Fixed(32.0))
-        .into()
 }
 
 fn sidebar_view<'a>(state: &State) -> Element<'a, Message> {
@@ -311,33 +251,54 @@ fn file_view(state: &State) -> Element<'_, Message> {
             ]
             .spacing(50)
             .align_y(iced::Alignment::Center);
-            let entry_button = button(entry_row)
-                .style(row_button)
-                .on_press(if entry.is_dir {
-                    Message::GoToDir(GoToMethod::Index(index))
-                } else {
-                    Message::OpenFile(GoToMethod::Index(index))
-                });
+
+            let is_pressed = state
+                .dragging
+                .as_ref()
+                .is_some_and(|d| d.source_tab == state.current_tab && d.source_path == index);
+            let is_hovered = state.hovered_row == Some(index);
+            let entry_button =
+                mouse_area(container(entry_row).style(row_style(is_hovered, is_pressed)))
+                    .on_press(Message::PressStart(index, entry.is_dir))
+                    .on_enter(Message::RowHoverStart(index, entry.is_dir))
+                    .on_exit(Message::RowHoverEnd);
+
             let entry_with_menu = ContextMenu::new(entry_button, move || {
-                column![
-                    button(text("Open"))
+                let mut column = column![
+                    button("Open")
                         .on_press(Message::ContextMenuAction(index, EntryAction::Open))
                         .style(secondary_button)
                         .width(Length::Fill),
-                    button(text("Copy Absolute Path"))
+                    button("Copy Absolute Path")
                         .style(secondary_button)
                         .on_press(Message::ContextMenuAction(
                             index,
                             EntryAction::CopyAbsolutePath
                         ))
                         .width(Length::Fill),
-                    button(text("Delete"))
+                    button("Rename")
+                        .style(secondary_button)
+                        .on_press(Message::ContextMenuAction(index, EntryAction::Rename))
+                        .width(Length::Fill),
+                    button("Delete")
                         .style(danger_button)
                         .on_press(Message::ContextMenuAction(index, EntryAction::Delete))
                         .width(Length::Fill),
                 ]
-                .width(Length::Fixed(150.0))
-                .into()
+                .width(Length::Fixed(150.0));
+                if !entry.is_dir {
+                    column = column.push(
+                        button(text("Open file location"))
+                            .on_press(Message::ContextMenuAction(
+                                index,
+                                EntryAction::OpenFileLocation,
+                            ))
+                            .style(secondary_button)
+                            .width(Length::Fill),
+                    )
+                }
+
+                column.into()
             })
             .style(menu_container);
 
@@ -348,11 +309,11 @@ fn file_view(state: &State) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill);
 
-    let path_display = text_input("", &state.current_tab().current_path.to_string_lossy())
+    let path_display = text_input("", &state.current_tab().root_entry().path.to_string_lossy())
         .style(text_input_style)
         .on_input(Message::UpdatePath)
         .on_submit(Message::GoToDir(GoToMethod::Path(
-            state.current_tab().current_path.clone(),
+            state.current_tab().root_entry().path.clone(),
         )));
     let back_button = button("<-")
         .on_press(Message::GoBack)
@@ -406,41 +367,6 @@ fn file_view(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn tab_ops(state: &mut State, ops: TabOps) -> Task<Message> {
-    match ops {
-        TabOps::NewTab => {
-            let home = state.home_dir.clone();
-            state.tabs.push(Tab {
-                loaded_entries: LoadedEntries::default(),
-                current_path: home.clone(),
-                search_field: String::new(),
-                search_results_displayed: false,
-                sorted_by: SortBy::None,
-            });
-            state.current_tab = state.tabs.len() - 1;
-            Task::done(Message::GoToDir(GoToMethod::Path(home)))
-        }
-        TabOps::SwitchTab(index) => {
-            state.current_tab = index;
-            Task::done(Message::GoToDir(GoToMethod::Reload))
-        }
-        TabOps::CloseTab(index) => {
-            if state.tabs.len() == 1 {
-                Task::none()
-            } else {
-                state.tabs.remove(index);
-                state.current_tab = state.tabs.len() - 1;
-                Task::done(Message::GoToDir(GoToMethod::Reload))
-            }
-        }
-        TabOps::CloseAllTabs => {
-            state.tabs.truncate(1);
-            state.current_tab = 0;
-            Task::done(Message::GoToDir(GoToMethod::Reload))
-        }
-    }
-}
-
 fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
     state.current_tab_mut().search_field.clear();
     state.current_tab_mut().search_results_displayed = false;
@@ -470,7 +396,6 @@ fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
 
 fn update_content(state: &mut State, res: Result<LoadedEntries, CError>) -> Task<Message> {
     if let Ok(result) = res {
-        state.current_tab_mut().current_path = result.root().path.clone();
         state.current_tab_mut().loaded_entries = result;
     }
     Task::none()
@@ -493,7 +418,7 @@ fn go_back(state: &mut State) -> Task<Message> {
 }
 
 fn update_path(state: &mut State, path: String) -> Task<Message> {
-    state.current_tab_mut().current_path = path.into();
+    state.current_tab_mut().root_entry_mut().path = path.into();
     Task::none()
 }
 
@@ -536,30 +461,43 @@ fn context_menu_action(state: &mut State, index: usize, action: EntryAction) -> 
             let path = state.current_tab().entries()[index].path.clone();
             return iced::clipboard::write(path.to_string_lossy().into_owned());
         }
+        EntryAction::OpenFileLocation => {
+            let mut path = state.current_tab().entries()[index].path.clone();
+            Task::done(Message::GoToDir(GoToMethod::Path(if path.pop() {
+                path
+            } else {
+                PathBuf::new()
+            })))
+        }
+        EntryAction::Rename => {
+            state.overlay = Overlay::Rename;
+            state.rename_field.source = state.current_tab().entries()[index].path.clone();
+            state.rename_field.dest = state.current_tab().entries()[index].path.clone();
+            let id: &'static str = "rename_input";
+            operation::focus(id)
+        }
     }
 }
 
-fn search_everything_update(state: &mut State, inp: String) -> Task<Message> {
-    state.current_tab_mut().search_field = inp;
+pub fn theme(state: &State) -> Theme {
+    state.theme.clone()
+}
+
+fn row_hover_start(state: &mut State, index: usize, is_dir: bool) -> Task<Message> {
+    state.hovered_row = Some(index);
+    if is_dir {
+        state.hovered_target = Some(DropTarget::FolderRow {
+            tab: state.current_tab,
+            index,
+        });
+    }
     Task::none()
 }
 
-fn search_everything(state: &mut State) -> Task<Message> {
-    let previous_dir = state.current_tab().root_entry();
-    match &state.search_method {
-        SearchMethod::FromHomeDirectory(home) => {
-            let query = state.current_tab().search_field.clone();
-            let root = home.clone();
-            let previous_dir = previous_dir.clone();
-            let max_results = state.max_results;
-            state.current_tab_mut().search_results_displayed = true;
-            Task::perform(
-                async move { search_all(query, root, previous_dir, max_results).await },
-                |entries| Message::UpdateContent(Ok(entries)),
-            )
-        }
-        SearchMethod::FromCustomDirectory => Task::none(),
-    }
+fn row_hover_end(state: &mut State) -> Task<Message> {
+    state.hovered_row = None;
+    state.hovered_target = None;
+    Task::none()
 }
 
 pub fn modal<'a>(
@@ -586,122 +524,4 @@ pub fn modal<'a>(
         )
     ]
     .into()
-}
-
-fn toggle_settings(state: &mut State) -> Task<Message> {
-    state.settings_open = !state.settings_open;
-    Task::none()
-}
-
-fn settings_panel(state: &State) -> Element<'_, Message> {
-    container(column![
-        text("Settings").size(20),
-        text("Set Theme"),
-        button("Dark Theme")
-            .on_press(Message::SettingsAction(SettingsAction::ChangeTheme(
-                win11_dark()
-            )))
-            .style(secondary_button),
-        button("Light Theme")
-            .on_press(Message::SettingsAction(SettingsAction::ChangeTheme(
-                win11_light()
-            )))
-            .style(secondary_button),
-        button("Rosé Pine")
-            .on_press(Message::SettingsAction(SettingsAction::ChangeTheme(
-                rose_pine()
-            )))
-            .style(secondary_button),
-        text("Set Maximum Amount of Results in Search"),
-        text_input("", &state.max_results.to_string())
-            .on_input(
-                |value| Message::SettingsAction(SettingsAction::ChangeMatchLimit(
-                    value.parse().unwrap_or(MAX_RESULTS_DEFAULT)
-                ))
-            )
-            .width(Length::Fixed(100.00))
-            .style(text_input_style),
-        text("Set the start directory for the search"),
-        button("Home Directory (Default)")
-            .on_press(Message::SettingsAction(SettingsAction::ChangeSearchMethod(
-                SearchMethod::FromHomeDirectory(state.home_dir.clone())
-            )))
-            .style(secondary_button),
-        button("Custom Directory")
-            .on_press(Message::SettingsAction(SettingsAction::ChangeSearchMethod(
-                SearchMethod::FromCustomDirectory
-            )))
-            .style(secondary_button),
-    ])
-    .into()
-}
-
-fn settings_action(state: &mut State, action: SettingsAction) -> Task<Message> {
-    match action {
-        SettingsAction::ChangeTheme(theme) => state.theme = theme,
-        SettingsAction::ChangeMatchLimit(limit) => state.max_results = limit,
-        SettingsAction::ChangeSearchMethod(method) => state.search_method = method,
-    }
-    Task::none()
-}
-
-pub fn theme(state: &State) -> Theme {
-    state.theme.clone()
-}
-
-pub fn sort_by(state: &mut State, sortmethod: SortBy) -> Task<Message> {
-    match sortmethod {
-        SortBy::FileType => match state.current_tab().sorted_by {
-            SortBy::FileType => {
-                state.current_tab_mut().entries_mut().reverse();
-            }
-            _ => {
-                state
-                    .current_tab_mut()
-                    .entries_mut()
-                    .sort_by(|a, b| a.is_dir.cmp(&b.is_dir));
-                state.current_tab_mut().sorted_by = SortBy::FileType;
-            }
-        },
-        SortBy::Date => match state.current_tab().sorted_by {
-            SortBy::Date => {
-                state.current_tab_mut().entries_mut().reverse();
-            }
-            _ => {
-                state
-                    .current_tab_mut()
-                    .entries_mut()
-                    .sort_by(|a, b| a.modified.cmp(&b.modified));
-                state.current_tab_mut().sorted_by = SortBy::Date;
-            }
-        },
-        SortBy::Name => match state.current_tab().sorted_by {
-            SortBy::Name => {
-                state.current_tab_mut().entries_mut().reverse();
-            }
-            _ => {
-                state
-                    .current_tab_mut()
-                    .entries_mut()
-                    .sort_by(|a, b| a.name.cmp(&b.name));
-                state.current_tab_mut().sorted_by = SortBy::Name;
-            }
-        },
-        SortBy::Size => match state.current_tab().sorted_by {
-            SortBy::Size => {
-                state.current_tab_mut().entries_mut().reverse();
-            }
-            _ => {
-                state
-                    .current_tab_mut()
-                    .entries_mut()
-                    .sort_by(|a, b| a.size.1.cmp(&b.size.1));
-                state.current_tab_mut().sorted_by = SortBy::Size;
-            }
-        },
-        SortBy::None => {
-            state.current_tab_mut().sorted_by = SortBy::None;
-        }
-    }
-    Task::none()
 }

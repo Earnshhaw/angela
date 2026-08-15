@@ -5,10 +5,13 @@ edition = "2024"
 
 [dependencies]
 chrono = "0.4.45"
-iced = { version = "0.14", features = ["tokio"] }
+iced = { version = "0.14", features = ["tokio", "image"] }
 iced_aw = "0.14.1"
 open = "5.4.1"
 rayon = "1.12.0"
 rfd = "0.17.2"
 tokio = { version = "1.53.1", features = ["full", "rt", "rt-multi-thread"] }
 trash = "5.2.6"
+
+[build-dependencies]
+winres = "0.1"

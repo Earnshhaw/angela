@@ -1,15 +1,29 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
+mod boot;
+mod dragndrop;
 mod fs_handling;
 mod gui;
+mod rename;
+mod search;
+mod settings;
+mod sort;
 mod style;
-use iced::application;
+mod tabs;
+use iced::{Size, application, window};
 
-const WIDTH: u32 = 1120;
-const HEIGHT: u32 = 600;
+use crate::dragndrop::subscription;
+
+const WIDTH: f32 = 1120.00;
+const HEIGHT: f32 = 600.00;
 
 fn main() -> iced::Result {
-    application(gui::boot, gui::update, gui::view)
-        .window_size((WIDTH, HEIGHT))
+    application(boot::boot, gui::update, gui::view)
+        .window(window::Settings {
+            icon: Some(window::icon::from_file("assets/a2.png").unwrap()),
+            size: Size::new(WIDTH, HEIGHT),
+            ..Default::default()
+        })
+        .subscription(subscription)
         .decorations(true)
         .theme(gui::theme)
         .title("Angela")
