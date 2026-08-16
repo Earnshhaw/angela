@@ -103,7 +103,7 @@ pub enum CError {
     Move,
 }
 
-const PARALLEL_THRESHOLD: usize = 64;
+const PARALLEL_THRESHOLD: usize = 150;
 
 fn process_entries(entries: &[DirEntry], method: &Method) -> Vec<DirInfo> {
     if entries.len() > PARALLEL_THRESHOLD {
@@ -197,7 +197,7 @@ pub fn sync_get_dir(dir: &PathBuf, now: Option<Instant>) -> Result<LoadedEntries
 
     if let Some(now) = now {
         println!(
-            "non streaming done in: {}μs; number of entries: {}; at directory: {}",
+            "proccesed entries in: {}μs; number of entries: {}; at directory: {}",
             now.elapsed().as_micros(),
             dirinfo.len(),
             dir.to_string_lossy()

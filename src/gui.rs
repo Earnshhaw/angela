@@ -1,17 +1,18 @@
 use crate::dragndrop::{
     DragPayload, DropTarget, cursor_moved, drag_released, hover_target, move_done, press_start,
 };
-use crate::fs_handling::*;
 use crate::gui::Message::SearchEverythingUpdate;
 use crate::rename::{
     RenameField, rename_done, rename_field_update, rename_go, rename_popup, rename_toggle,
 };
-use crate::search::{SearchMethod, search_everything, search_everything_update};
+use crate::search::{Search, search_everything, search_everything_update};
 use crate::settings::{SettingsAction, settings_action, settings_panel, toggle_settings};
 use crate::sort::{SortBy, sort_by};
 use crate::style::*;
 use crate::tabs::{TabOps, tab_bar_view, tab_ops};
+use crate::{DEBUG_MODE, fs_handling::*};
 use iced::widget::pane_grid::{self, PaneGrid, ResizeEvent};
+use iced::widget::scrollable::Viewport;
 use iced::widget::{Space, button, center, mouse_area, opaque, operation, stack, text};
 use iced::{Color, Point, Theme};
 use iced::{
@@ -20,6 +21,7 @@ use iced::{
 };
 use iced_aw::ContextMenu;
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -27,7 +29,7 @@ pub struct State {
     pub tabs: Vec<Tab>,
     pub current_tab: usize,
     pub home_dir: PathBuf,
-    pub search_method: SearchMethod,
+    pub search_method: Search,
     pub theme: Theme,
     pub max_results: usize,
     pub dragging: Option<DragPayload>,
@@ -35,6 +37,9 @@ pub struct State {
     pub hovered_row: Option<usize>,
     pub overlay: Overlay,
     pub rename_field: RenameField,
+    pub shortcut_dirs: [(PathBuf, String); 7],
+    pub scroll_offset: f32,
+    pub viewport_height: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +80,7 @@ pub enum GoToMethod {
     Index(usize),
     Path(PathBuf),
     Reload,
+    Shortcut(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -106,18 +112,11 @@ pub enum Message {
     RenameGo,
     RenameDone(Result<(), CError>),
     OpenInTerminalRoot,
+    RfdOpen,
+    Scrolled(Viewport),
 }
 
 pub const MAX_RESULTS_DEFAULT: usize = 100;
-const SHORTCUTS: [(&str, &str); 6] = [
-    ("Documents", "📄 Documents"),
-    ("Downloads", "📥 Downloads"),
-    ("Pictures", "🖼️ Pictures"),
-    ("Videos", "📽️ Videos"),
-    ("Music", "🎵 Music"),
-    ("Desktop", "🖥️ Desktop"),
-];
-const HOME_BUTTON: &str = "🏠 Home";
 
 #[derive(Debug, Clone)]
 pub enum EntryAction {
@@ -200,30 +199,25 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RenameGo => rename_go(state),
         Message::RenameDone(res) => rename_done(state, res),
         Message::OpenInTerminalRoot => open_in_terminal_root(state),
+        Message::RfdOpen => rfd_open(state),
+        Message::Scrolled(view) => scrolled(state, view),
     }
 }
 
-fn sidebar_view<'a>(state: &State) -> Element<'a, Message> {
+fn sidebar_view<'a>(state: &'a State) -> Element<'a, Message> {
     let search_everything = text_input("🔍 Search...", &state.current_tab().search_field)
         .style(text_input_style)
         .on_input(Message::SearchEverythingUpdate)
         .on_submit(Message::SearchEverything);
 
-    let home_button = button(text(HOME_BUTTON))
-        .style(secondary_button)
-        .width(Length::Fill)
-        .on_press(Message::GoToDir(GoToMethod::Path(state.home_dir.clone())));
-
-    let shortcut_buttons = SHORTCUTS.iter().fold(
-        column![search_everything, home_button],
-        |col, (name, merged_name)| {
+    let shortcut_buttons = state.shortcut_dirs.iter().enumerate().fold(
+        column![search_everything],
+        |col, (index, (_, merged_name))| {
             col.push(
-                button(text(*merged_name))
+                button(text(merged_name))
                     .style(secondary_button)
                     .width(Length::Fill)
-                    .on_press(Message::GoToDir(GoToMethod::Path(
-                        state.home_dir.join(name),
-                    ))),
+                    .on_press(Message::GoToDir(GoToMethod::Shortcut(index))),
             )
         },
     );
@@ -243,81 +237,89 @@ fn sidebar_view<'a>(state: &State) -> Element<'a, Message> {
 fn file_view(state: &State) -> Element<'_, Message> {
     let entries = state.current_tab().entries();
 
-    let list_of_entries = scrollable(entries.iter().enumerate().fold(
-        column![],
-        |column, (index, entry)| {
-            let entry_row = row![
-                text(&entry.name).width(Length::FillPortion(4)),
-                text(&entry.modified).width(Length::FillPortion(2)),
-                text(&entry.size.0).width(Length::FillPortion(1))
-            ]
-            .spacing(50)
-            .align_y(iced::Alignment::Center);
+    let (start, end, top_spacer, bottom_spacer) = get_bounds(state);
 
-            let is_pressed = state
-                .dragging
-                .as_ref()
-                .is_some_and(|d| d.source_tab == state.current_tab && d.source_path == index);
-            let is_hovered = state.hovered_row == Some(index);
-            let entry_button =
-                mouse_area(container(entry_row).style(row_style(is_hovered, is_pressed)))
-                    .on_press(Message::PressStart(index, entry.is_dir))
-                    .on_enter(Message::RowHoverStart(index, entry.is_dir))
-                    .on_exit(Message::RowHoverEnd(index));
-
-            let entry_with_menu = ContextMenu::new(entry_button, move || {
-                let mut column = column![
-                    button("Open")
-                        .on_press(Message::ContextMenuAction(index, EntryAction::Open))
-                        .style(secondary_button)
-                        .width(Length::Fill),
-                    button("Copy Absolute Path")
-                        .style(secondary_button)
-                        .on_press(Message::ContextMenuAction(
-                            index,
-                            EntryAction::CopyAbsolutePath
-                        ))
-                        .width(Length::Fill),
-                    button("Rename")
-                        .style(secondary_button)
-                        .on_press(Message::ContextMenuAction(index, EntryAction::Rename))
-                        .width(Length::Fill),
-                    button("Delete")
-                        .style(danger_button)
-                        .on_press(Message::ContextMenuAction(index, EntryAction::Delete))
-                        .width(Length::Fill),
+    let list_of_entries = scrollable(
+        entries
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end - start)
+            .fold(column![top_spacer], |column, (index, entry)| {
+                let entry_row = row![
+                    text(&entry.name).width(Length::FillPortion(4)),
+                    text(&entry.modified).width(Length::FillPortion(2)),
+                    text(&entry.size.0).width(Length::FillPortion(1))
                 ]
-                .width(Length::Fixed(150.0));
-                if !entry.is_dir {
-                    column = column.push(
-                        button(text("Open File Location"))
-                            .on_press(Message::ContextMenuAction(
-                                index,
-                                EntryAction::OpenFileLocation,
-                            ))
-                            .style(secondary_button)
-                            .width(Length::Fill),
-                    )
-                }
-                if entry.is_dir {
-                    column = column.push(
-                        button(text("Open in Terminal"))
-                            .on_press(Message::ContextMenuAction(
-                                index,
-                                EntryAction::OpenInTerminal,
-                            ))
-                            .style(secondary_button)
-                            .width(Length::Fill),
-                    )
-                }
+                .spacing(50)
+                .align_y(iced::Alignment::Center);
 
-                column.into()
+                let is_pressed = state
+                    .dragging
+                    .as_ref()
+                    .is_some_and(|d| d.source_tab == state.current_tab && d.source_path == index);
+                let is_hovered = state.hovered_row == Some(index);
+                let entry_button =
+                    mouse_area(container(entry_row).style(row_style(is_hovered, is_pressed)))
+                        .on_press(Message::PressStart(index, entry.is_dir))
+                        .on_enter(Message::RowHoverStart(index, entry.is_dir))
+                        .on_exit(Message::RowHoverEnd(index));
+
+                let entry_with_menu = ContextMenu::new(entry_button, move || {
+                    let mut column = column![
+                        button("Open")
+                            .on_press(Message::ContextMenuAction(index, EntryAction::Open))
+                            .style(secondary_button)
+                            .width(Length::Fill),
+                        button("Copy Absolute Path")
+                            .style(secondary_button)
+                            .on_press(Message::ContextMenuAction(
+                                index,
+                                EntryAction::CopyAbsolutePath
+                            ))
+                            .width(Length::Fill),
+                        button("Rename")
+                            .style(secondary_button)
+                            .on_press(Message::ContextMenuAction(index, EntryAction::Rename))
+                            .width(Length::Fill),
+                        button("Delete")
+                            .style(danger_button)
+                            .on_press(Message::ContextMenuAction(index, EntryAction::Delete))
+                            .width(Length::Fill),
+                    ]
+                    .width(Length::Fixed(150.0));
+                    if !entry.is_dir {
+                        column = column.push(
+                            button(text("Open File Location"))
+                                .on_press(Message::ContextMenuAction(
+                                    index,
+                                    EntryAction::OpenFileLocation,
+                                ))
+                                .style(secondary_button)
+                                .width(Length::Fill),
+                        )
+                    }
+                    if entry.is_dir {
+                        column = column.push(
+                            button(text("Open in Terminal"))
+                                .on_press(Message::ContextMenuAction(
+                                    index,
+                                    EntryAction::OpenInTerminal,
+                                ))
+                                .style(secondary_button)
+                                .width(Length::Fill),
+                        )
+                    }
+
+                    column.into()
+                })
+                .style(menu_container);
+
+                column.push(entry_with_menu)
             })
-            .style(menu_container);
-
-            column.push(entry_with_menu)
-        },
-    ))
+            .push(bottom_spacer),
+    )
+    .on_scroll(Message::Scrolled)
     .style(scrollable_style)
     .width(Length::Fill)
     .height(Length::Fill);
@@ -328,7 +330,7 @@ fn file_view(state: &State) -> Element<'_, Message> {
         .on_submit(Message::GoToDir(GoToMethod::Path(
             state.current_tab().root_entry().path.clone(),
         )));
-    let back_button = button("<-")
+    let back_button = button("←")
         .on_press(Message::GoBack)
         .style(secondary_button);
     let sorting_options = row![
@@ -376,20 +378,24 @@ fn file_view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(4),
     )
-    .height(Length::Fixed(32.0))
     .into()
 }
 
 fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
+    let now = if DEBUG_MODE {
+        Some(Instant::now())
+    } else {
+        None
+    };
     match method {
         GoToMethod::Path(path) => Task::perform(
-            async move { get_dir(path, None).await },
+            async move { get_dir(path, now).await },
             Message::UpdateContent,
         ),
         GoToMethod::Index(index) => {
             let path = state.current_tab().entries()[index].path.clone();
             Task::perform(
-                async move { get_dir(path, None).await },
+                async move { get_dir(path, now).await },
                 Message::UpdateContent,
             )
         }
@@ -397,7 +403,14 @@ fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
             let path = state.current_tab().root_entry().path.clone();
 
             Task::perform(
-                async move { get_dir(path, None).await },
+                async move { get_dir(path, now).await },
+                Message::UpdateContent,
+            )
+        }
+        GoToMethod::Shortcut(index) => {
+            let path = state.shortcut_dirs[index].0.clone();
+            Task::perform(
+                async move { get_dir(path, now).await },
                 Message::UpdateContent,
             )
         }
@@ -410,6 +423,7 @@ fn update_content(state: &mut State, res: Result<LoadedEntries, CError>) -> Task
         state.current_tab_mut().search_field.clear();
         state.current_tab_mut().search_results_displayed = false;
         state.current_tab_mut().sorted_by = SortBy::None;
+        state.scroll_offset = 0.0;
     }
     Task::none()
 }
@@ -446,6 +460,7 @@ fn open_file(state: &mut State, method: GoToMethod) -> Task<Message> {
             Task::none()
         }
         GoToMethod::Reload => Task::none(), //Unreachable in practice
+        GoToMethod::Shortcut(_) => Task::none(), //Unreachable in practice
     }
 }
 
@@ -558,4 +573,47 @@ fn open_in_terminal_root(state: &mut State) -> Task<Message> {
         .spawn()
         .ok();
     Task::none()
+}
+
+fn rfd_open(state: &mut State) -> Task<Message> {
+    let home = state.home_dir.clone();
+    Task::perform(
+        async move {
+            let path = rfd::AsyncFileDialog::new().pick_folder().await;
+            if let Some(path) = path {
+                path.path().to_owned()
+            } else {
+                home
+            }
+        },
+        |path| Message::SettingsAction(SettingsAction::ChangeSearchRoot(path)),
+    )
+}
+
+pub fn scrolled(state: &mut State, view: Viewport) -> Task<Message> {
+    state.scroll_offset = view.absolute_offset().y;
+    state.viewport_height = view.bounds().height;
+    Task::none()
+}
+
+const ROW_HEIGHT: f32 = 24.0;
+const BUFFER_ROWS: usize = 5;
+
+pub fn get_bounds(state: &State) -> (usize, usize, Space, Space) {
+    let total = state.current_tab().entries().len();
+
+    let first_visible = (state.scroll_offset / ROW_HEIGHT).floor() as usize;
+    let visible_rows = if state.viewport_height <= 0.0 {
+        50
+    } else {
+        (state.viewport_height / ROW_HEIGHT).ceil() as usize
+    };
+
+    let start = first_visible.saturating_sub(BUFFER_ROWS);
+    let end = (first_visible + visible_rows + BUFFER_ROWS).min(total);
+
+    let top_spacer = Space::new().height(start as f32 * ROW_HEIGHT);
+    let bottom_spacer = Space::new().height((total - end) as f32 * ROW_HEIGHT);
+
+    (start, end, top_spacer, bottom_spacer)
 }

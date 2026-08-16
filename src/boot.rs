@@ -1,10 +1,13 @@
-use std::env::home_dir;
+use std::{
+    env::home_dir,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     fs_handling::sync_get_dir,
     gui::{MAX_RESULTS_DEFAULT, Overlay, PaneKind, State, Tab},
     rename::RenameField,
-    search::SearchMethod,
+    search::Search,
     sort::SortBy,
     style::win11_dark,
 };
@@ -30,14 +33,45 @@ pub fn boot() -> State {
         tabs,
         current_tab: 0,
         home_dir: home.clone(),
-        search_method: SearchMethod::FromHomeDirectory(home),
+        search_method: Search {
+            root_dir: home.clone(),
+        },
         theme: win11_dark(),
-
         max_results: MAX_RESULTS_DEFAULT,
         dragging: None,
         hovered_target: None,
         hovered_row: None,
         overlay: Overlay::None,
         rename_field: RenameField::default(),
+        shortcut_dirs: init_shortcut_dirs(&home),
+        scroll_offset: 0.0,
+        viewport_height: 600.0,
     }
+}
+
+pub fn init_shortcut_dirs(home: &Path) -> [(PathBuf, String); 7] {
+    let init_paths = [
+        home.to_owned(),
+        home.join("Documents"),
+        home.join("Downloads"),
+        home.join("Pictures"),
+        home.join("Videos"),
+        home.join("Music"),
+        home.join("Desktop"),
+    ];
+    let init_names = [
+        "🏠 Home".to_string(),
+        "📄 Documents".to_string(),
+        "📥 Downloads".to_string(),
+        "🖼️ Pictures".to_string(),
+        "📽️ Videos".to_string(),
+        "🎵 Music".to_string(),
+        "🖥️ Desktop".to_string(),
+    ];
+    init_paths
+        .into_iter()
+        .zip(init_names.into_iter())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
 }

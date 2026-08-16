@@ -1,6 +1,7 @@
+use std::path::PathBuf;
+
 use crate::{
     gui::{MAX_RESULTS_DEFAULT, Overlay},
-    search::SearchMethod,
     style::*,
 };
 use iced::{
@@ -13,7 +14,7 @@ use crate::gui::{Message, State};
 #[derive(Debug, Clone)]
 pub enum SettingsAction {
     ChangeTheme(Theme),
-    ChangeSearchMethod(SearchMethod),
+    ChangeSearchRoot(PathBuf),
     ChangeMatchLimit(usize),
 }
 
@@ -56,14 +57,12 @@ pub fn settings_panel(state: &State) -> Element<'_, Message> {
             .style(text_input_style),
         text("Set the start directory for the search"),
         button("Home Directory (Default)")
-            .on_press(Message::SettingsAction(SettingsAction::ChangeSearchMethod(
-                SearchMethod::FromHomeDirectory(state.home_dir.clone())
+            .on_press(Message::SettingsAction(SettingsAction::ChangeSearchRoot(
+                state.home_dir.clone()
             )))
             .style(secondary_button),
         button("Custom Directory")
-            .on_press(Message::SettingsAction(SettingsAction::ChangeSearchMethod(
-                SearchMethod::FromCustomDirectory
-            )))
+            .on_press(Message::RfdOpen)
             .style(secondary_button),
     ])
     .into()
@@ -73,7 +72,7 @@ pub fn settings_action(state: &mut State, action: SettingsAction) -> Task<Messag
     match action {
         SettingsAction::ChangeTheme(theme) => state.theme = theme,
         SettingsAction::ChangeMatchLimit(limit) => state.max_results = limit,
-        SettingsAction::ChangeSearchMethod(method) => state.search_method = method,
+        SettingsAction::ChangeSearchRoot(root) => state.search_method.root_dir = root,
     }
     Task::none()
 }
