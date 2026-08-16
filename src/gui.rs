@@ -11,8 +11,7 @@ use crate::settings::{SettingsAction, settings_action, settings_panel, toggle_se
 use crate::sort::{SortBy, sort_by};
 use crate::style::*;
 use crate::tabs::{TabOps, tab_bar_view, tab_ops};
-use iced::widget::pane_grid::ResizeEvent;
-use iced::widget::pane_grid::{self, PaneGrid};
+use iced::widget::pane_grid::{self, PaneGrid, ResizeEvent};
 use iced::widget::{Space, button, center, mouse_area, opaque, operation, stack, text};
 use iced::{Color, Point, Theme};
 use iced::{
@@ -101,11 +100,12 @@ pub enum Message {
     HoverTarget(Option<DropTarget>),
     MoveDone(Result<(), CError>),
     RowHoverStart(usize, bool),
-    RowHoverEnd,
+    RowHoverEnd(usize),
     RenameToggle,
     RenameFieldUpdate(String),
     RenameGo,
     RenameDone(Result<(), CError>),
+    OpenInTerminalRoot,
 }
 
 pub const MAX_RESULTS_DEFAULT: usize = 100;
@@ -126,6 +126,7 @@ pub enum EntryAction {
     CopyAbsolutePath,
     OpenFileLocation,
     Rename,
+    OpenInTerminal,
 }
 
 impl State {
@@ -193,11 +194,12 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::HoverTarget(target) => hover_target(target, state),
         Message::MoveDone(result) => move_done(result, state),
         Message::RowHoverStart(index, is_dir) => row_hover_start(state, index, is_dir),
-        Message::RowHoverEnd => row_hover_end(state),
+        Message::RowHoverEnd(index) => row_hover_end(state, index),
         Message::RenameToggle => rename_toggle(state),
         Message::RenameFieldUpdate(field) => rename_field_update(state, field),
         Message::RenameGo => rename_go(state),
         Message::RenameDone(res) => rename_done(state, res),
+        Message::OpenInTerminalRoot => open_in_terminal_root(state),
     }
 }
 
@@ -261,7 +263,7 @@ fn file_view(state: &State) -> Element<'_, Message> {
                 mouse_area(container(entry_row).style(row_style(is_hovered, is_pressed)))
                     .on_press(Message::PressStart(index, entry.is_dir))
                     .on_enter(Message::RowHoverStart(index, entry.is_dir))
-                    .on_exit(Message::RowHoverEnd);
+                    .on_exit(Message::RowHoverEnd(index));
 
             let entry_with_menu = ContextMenu::new(entry_button, move || {
                 let mut column = column![
@@ -288,10 +290,21 @@ fn file_view(state: &State) -> Element<'_, Message> {
                 .width(Length::Fixed(150.0));
                 if !entry.is_dir {
                     column = column.push(
-                        button(text("Open file location"))
+                        button(text("Open File Location"))
                             .on_press(Message::ContextMenuAction(
                                 index,
                                 EntryAction::OpenFileLocation,
+                            ))
+                            .style(secondary_button)
+                            .width(Length::Fill),
+                    )
+                }
+                if entry.is_dir {
+                    column = column.push(
+                        button(text("Open in Terminal"))
+                            .on_press(Message::ContextMenuAction(
+                                index,
+                                EntryAction::OpenInTerminal,
                             ))
                             .style(secondary_button)
                             .width(Length::Fill),
@@ -368,9 +381,6 @@ fn file_view(state: &State) -> Element<'_, Message> {
 }
 
 fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
-    state.current_tab_mut().search_field.clear();
-    state.current_tab_mut().search_results_displayed = false;
-    state.current_tab_mut().sorted_by = SortBy::None;
     match method {
         GoToMethod::Path(path) => Task::perform(
             async move { get_dir(path, None).await },
@@ -397,6 +407,9 @@ fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
 fn update_content(state: &mut State, res: Result<LoadedEntries, CError>) -> Task<Message> {
     if let Ok(result) = res {
         state.current_tab_mut().loaded_entries = result;
+        state.current_tab_mut().search_field.clear();
+        state.current_tab_mut().search_results_displayed = false;
+        state.current_tab_mut().sorted_by = SortBy::None;
     }
     Task::none()
 }
@@ -476,6 +489,14 @@ fn context_menu_action(state: &mut State, index: usize, action: EntryAction) -> 
             let id: &'static str = "rename_input";
             operation::focus(id)
         }
+        EntryAction::OpenInTerminal => {
+            let path = state.current_tab().entries()[index].path.to_string_lossy();
+            std::process::Command::new("wt")
+                .args(["-p", "Command Prompt", "-d", &path])
+                .spawn()
+                .ok();
+            Task::none()
+        }
     }
 }
 
@@ -494,9 +515,13 @@ fn row_hover_start(state: &mut State, index: usize, is_dir: bool) -> Task<Messag
     Task::none()
 }
 
-fn row_hover_end(state: &mut State) -> Task<Message> {
-    state.hovered_row = None;
-    state.hovered_target = None;
+fn row_hover_end(state: &mut State, index: usize) -> Task<Message> {
+    if state.hovered_row == Some(index) {
+        state.hovered_row = None;
+    }
+    if matches!(state.hovered_target, Some(DropTarget::FolderRow { index: i, .. }) if i == index) {
+        state.hovered_target = None;
+    }
     Task::none()
 }
 
@@ -524,4 +549,13 @@ pub fn modal<'a>(
         )
     ]
     .into()
+}
+
+fn open_in_terminal_root(state: &mut State) -> Task<Message> {
+    let path = state.current_tab().root_entry().path.to_string_lossy();
+    std::process::Command::new("wt")
+        .args(["-p", "Command Prompt", "-d", &path])
+        .spawn()
+        .ok();
+    Task::none()
 }

@@ -22,18 +22,6 @@ pub struct DragPayload {
 
 pub const DRAG_THRESHOLD: f32 = 1.0;
 
-pub fn subscription(_state: &State) -> iced::Subscription<Message> {
-    iced::event::listen_with(|event, _status, _window| match event {
-        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-            Some(Message::CursorMoved(position))
-        }
-        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
-            Some(Message::DragReleased)
-        }
-        _ => None,
-    })
-}
-
 pub fn cursor_moved(position: iced::Point, state: &mut State) -> Task<Message> {
     let Some(drag) = &mut state.dragging else {
         return Task::none();
