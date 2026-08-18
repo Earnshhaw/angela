@@ -11,10 +11,11 @@ use crate::sort::{SortBy, sort_by};
 use crate::style::*;
 use crate::tabs::{TabOps, tab_bar_view, tab_ops};
 use crate::{DEBUG_MODE, fs_handling::*};
+use iced::keyboard::key::{Code, Named, Physical};
 use iced::widget::pane_grid::{self, PaneGrid, ResizeEvent};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{Space, button, center, mouse_area, opaque, operation, stack, text};
-use iced::{Color, Point, Theme};
+use iced::{Color, Point, Theme, keyboard};
 use iced::{
     Element, Length, Task,
     widget::{column, container, row, scrollable, text_input},
@@ -114,6 +115,11 @@ pub enum Message {
     OpenInTerminalRoot,
     RfdOpen,
     Scrolled(Viewport),
+    KeyPressed {
+        key: keyboard::Key,
+        physical_key: Physical,
+        modifiers: keyboard::Modifiers,
+    },
 }
 
 pub const MAX_RESULTS_DEFAULT: usize = 100;
@@ -201,6 +207,11 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::OpenInTerminalRoot => open_in_terminal_root(state),
         Message::RfdOpen => rfd_open(state),
         Message::Scrolled(view) => scrolled(state, view),
+        Message::KeyPressed {
+            key,
+            physical_key,
+            modifiers,
+        } => key_pressed(state, key, physical_key, modifiers),
     }
 }
 
@@ -459,8 +470,7 @@ fn open_file(state: &mut State, method: GoToMethod) -> Task<Message> {
             open::that(&path).unwrap();
             Task::none()
         }
-        GoToMethod::Reload => Task::none(), //Unreachable in practice
-        GoToMethod::Shortcut(_) => Task::none(), //Unreachable in practice
+        _ => Task::none(), // Unreachable in practice
     }
 }
 
@@ -616,4 +626,47 @@ pub fn get_bounds(state: &State) -> (usize, usize, Space, Space) {
     let bottom_spacer = Space::new().height((total - end) as f32 * ROW_HEIGHT);
 
     (start, end, top_spacer, bottom_spacer)
+}
+
+fn key_pressed(
+    state: &mut State,
+    key: keyboard::Key,
+    physical_key: Physical,
+    modifiers: keyboard::Modifiers,
+) -> Task<Message> {
+    if !matches!(state.overlay, Overlay::None) {
+        return Task::none();
+    }
+
+    if modifiers.control() {
+        if let Physical::Code(code) = physical_key {
+            let tab_index = match code {
+                Code::Digit1 => Some(0),
+                Code::Digit2 => Some(1),
+                Code::Digit3 => Some(2),
+                Code::Digit4 => Some(3),
+                Code::Digit5 => Some(4),
+                Code::Digit6 => Some(5),
+                Code::Digit7 => Some(6),
+                Code::Digit8 => Some(7),
+                Code::Digit9 => Some(8),
+                _ => None,
+            };
+            if let Some(index) = tab_index {
+                return Task::done(Message::TabOp(TabOps::SwitchTab(index)));
+            }
+        }
+    }
+
+    match key.as_ref() {
+        keyboard::Key::Character("t") if modifiers.control() => {
+            Task::done(Message::OpenInTerminalRoot)
+        }
+        keyboard::Key::Named(Named::Tab) => {
+            let next = (state.current_tab + 1) % state.tabs.len().max(1);
+            Task::done(Message::TabOp(TabOps::SwitchTab(next)))
+        }
+
+        _ => Task::none(),
+    }
 }

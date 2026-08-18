@@ -1,4 +1,4 @@
-//#![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 mod boot;
 mod dragndrop;
 mod fs_handling;
@@ -12,7 +12,7 @@ mod subscriptions;
 mod tabs;
 use iced::application;
 
-pub const DEBUG_MODE: bool = true;
+pub const DEBUG_MODE: bool = false;
 const WIDTH: f32 = 1120.00;
 const HEIGHT: f32 = 600.00;
 

@@ -41,6 +41,9 @@ pub fn tab_ops(state: &mut State, ops: TabOps) -> Task<Message> {
             Task::done(Message::GoToDir(GoToMethod::Path(home)))
         }
         TabOps::SwitchTab(index) => {
+            if index >= state.tabs.len() {
+                return Task::none();
+            }
             state.current_tab = index;
             Task::done(Message::GoToDir(GoToMethod::Reload))
         }
