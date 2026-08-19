@@ -1,4 +1,4 @@
-use crate::gui::LoadedEntries;
+use crate::{DEBUG_MODE, gui::LoadedEntries};
 use chrono::{DateTime, Local};
 use rayon::prelude::*;
 use std::{
@@ -302,6 +302,12 @@ pub async fn move_entry(source: PathBuf, dest_dir: PathBuf) -> Result<(), CError
     spawn_blocking(move || {
         let file_name = source.file_name().ok_or(CError::ReadDir)?;
         let dest = dest_dir.join(file_name);
+        if file_name == dest {
+            return Ok(());
+        }
+        if DEBUG_MODE {
+            println!("Moving: {:?} -> {:?}", source, dest);
+        }
         std::fs::rename(&source, &dest).map_err(|_| CError::Move)
     })
     .await

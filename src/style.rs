@@ -147,6 +147,43 @@ pub fn row_style(is_hovered: bool, is_pressed: bool) -> impl Fn(&Theme) -> conta
     }
 }
 
+pub fn shortcut_style(
+    is_hovered: bool,
+    is_drop_target: bool,
+) -> impl Fn(&Theme) -> container::Style {
+    move |theme: &Theme| {
+        let palette = theme.extended_palette();
+
+        let background = if is_hovered {
+            Some(Background::Color(palette.background.strong.color))
+        } else if is_drop_target {
+            Some(Background::Color(Color {
+                a: 0.35,
+                ..palette.primary.base.color
+            }))
+        } else {
+            None
+        };
+        //let background = Some(Background::Color(Color::BLACK));
+
+        container::Style {
+            text_color: Some(palette.background.base.text),
+            background,
+            border: Border {
+                radius: 4.0.into(),
+                width: if is_drop_target { 1.5 } else { 0.0 },
+                color: if is_drop_target {
+                    palette.primary.base.color
+                } else {
+                    Color::TRANSPARENT
+                },
+            },
+            shadow: Shadow::default(),
+            snap: true,
+        }
+    }
+}
+
 pub fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
 

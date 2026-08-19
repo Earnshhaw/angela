@@ -41,6 +41,7 @@ pub fn boot() -> State {
         dragging: None,
         hovered_target: None,
         hovered_row: None,
+        hovered_shortcut: None,
         overlay: Overlay::None,
         rename_field: RenameField::default(),
         shortcut_dirs: init_shortcut_dirs(&home),

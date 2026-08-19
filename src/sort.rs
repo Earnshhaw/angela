@@ -21,7 +21,7 @@ pub fn sort_by(state: &mut State, sortmethod: SortBy) -> Task<Message> {
                 state
                     .current_tab_mut()
                     .entries_mut()
-                    .sort_unstable_by(|a, b| a.is_dir.cmp(&b.is_dir));
+                    .sort_unstable_by(|a, b| b.is_dir.cmp(&a.is_dir));
                 state.current_tab_mut().sorted_by = SortBy::FileType;
             }
         },

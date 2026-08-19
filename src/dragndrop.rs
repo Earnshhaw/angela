@@ -1,4 +1,5 @@
 use crate::{
+    DEBUG_MODE,
     fs_handling::{CError, move_entry},
     gui::{GoToMethod, Message, State},
 };
@@ -8,6 +9,7 @@ use iced::Task;
 pub enum DropTarget {
     Tab(usize),
     FolderRow { tab: usize, index: usize },
+    Shortcut(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +28,9 @@ pub fn cursor_moved(position: iced::Point, state: &mut State) -> Task<Message> {
         let anchor = *drag.press_position.get_or_insert(position);
         if !drag.confirmed && anchor.distance(position) > DRAG_THRESHOLD {
             drag.confirmed = true;
+        }
+        if drag.confirmed && !state.current_tab_mut().loaded_entries.expanded {
+            state.current_tab_mut().loaded_entries.expand();
         }
     }
     Task::none()
@@ -59,17 +64,34 @@ pub fn drag_released(state: &mut State) -> Task<Message> {
     let hovered = state.hovered_target.take();
     let target = match hovered {
         Some(target) => target,
-        None => return Task::none(),
+        None => {
+            if state.current_tab().expanded() {
+                state.current_tab_mut().loaded_entries.collapse();
+            }
+            return Task::none();
+        }
     };
 
     let dest_dir = match target {
         DropTarget::Tab(i) => state.tabs[i].root_entry().path.clone(),
         DropTarget::FolderRow { tab, index } => state.tabs[tab].entries()[index].path.clone(),
+        DropTarget::Shortcut(i) => state.shortcut_dirs[i].0.clone(),
     };
 
     let source_path = state.tabs[drag.source_tab].entries()[drag.source_path]
         .path
         .clone();
+
+    if DEBUG_MODE {
+        println!(
+            "dest: {} source: {}",
+            dest_dir.to_string_lossy(),
+            source_path.to_string_lossy()
+        );
+    }
+    if state.current_tab().expanded() {
+        state.current_tab_mut().loaded_entries.collapse();
+    }
 
     Task::perform(
         async move { move_entry(source_path, dest_dir).await },
@@ -78,13 +100,20 @@ pub fn drag_released(state: &mut State) -> Task<Message> {
 }
 
 pub fn hover_target(target: Option<DropTarget>, state: &mut State) -> Task<Message> {
+    if DEBUG_MODE {
+        println!("{:?}", target);
+    }
     state.hovered_target = target;
     Task::none()
 }
 
 pub fn move_done(result: Result<(), CError>, state: &mut State) -> Task<Message> {
+    if DEBUG_MODE {
+        println!("move_done: {:?}", result);
+    }
     state.dragging = None;
     state.hovered_target = None;
+
     match result {
         Ok(_) => {}
         Err(_) => {}

@@ -45,7 +45,8 @@ pub fn tab_ops(state: &mut State, ops: TabOps) -> Task<Message> {
                 return Task::none();
             }
             state.current_tab = index;
-            Task::done(Message::GoToDir(GoToMethod::Reload))
+            //Task::done(Message::GoToDir(GoToMethod::Reload))
+            Task::none()
         }
         TabOps::CloseTab(index) => {
             if state.tabs.len() == 1 {

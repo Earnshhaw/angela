@@ -36,6 +36,7 @@ pub struct State {
     pub dragging: Option<DragPayload>,
     pub hovered_target: Option<DropTarget>,
     pub hovered_row: Option<usize>,
+    pub hovered_shortcut: Option<usize>,
     pub overlay: Overlay,
     pub rename_field: RenameField,
     pub shortcut_dirs: [(PathBuf, String); 7],
@@ -52,13 +53,34 @@ pub enum Overlay {
 
 #[derive(Debug, Clone, Default)]
 pub struct LoadedEntries {
-    root: DirInfo,
-    entries: Vec<DirInfo>,
+    pub root: DirInfo,
+    pub entries: Vec<DirInfo>,
+    pub expanded: bool,
 }
 
 impl LoadedEntries {
     pub fn new(root: DirInfo, entries: Vec<DirInfo>) -> Self {
-        Self { root, entries }
+        Self {
+            root,
+            entries,
+            expanded: false,
+        }
+    }
+    pub fn expand(&mut self) {
+        let previous = DirInfo {
+            path: self.root.clone().path.parent().unwrap().to_owned(),
+
+            name: "📁 ..".to_string(),
+            is_dir: true,
+            ..Default::default()
+        };
+
+        self.entries.push(previous);
+        self.expanded = true;
+    }
+    pub fn collapse(&mut self) {
+        self.entries.pop();
+        self.expanded = false;
     }
 }
 
@@ -106,8 +128,8 @@ pub enum Message {
     DragReleased,
     HoverTarget(Option<DropTarget>),
     MoveDone(Result<(), CError>),
-    RowHoverStart(usize, bool),
-    RowHoverEnd(usize),
+    RowHoverStart(usize, bool, Area),
+    RowHoverEnd(usize, Area),
     RenameToggle,
     RenameFieldUpdate(String),
     RenameGo,
@@ -134,12 +156,33 @@ pub enum EntryAction {
     OpenInTerminal,
 }
 
+#[derive(Debug, Clone)]
+pub enum Area {
+    Shortcut,
+    RowEntries,
+}
+
 impl State {
     pub fn current_tab(&self) -> &Tab {
         &self.tabs[self.current_tab]
     }
     pub fn current_tab_mut(&mut self) -> &mut Tab {
         &mut self.tabs[self.current_tab]
+    }
+    fn is_pressed(&self, entry_index: usize, area: Area) -> bool {
+        match area {
+            Area::RowEntries => self
+                .dragging
+                .as_ref()
+                .is_some_and(|d| d.source_tab == self.current_tab && d.source_path == entry_index),
+            Area::Shortcut => false,
+        }
+    }
+    fn is_hovered(&self, entry_index: usize, area: Area) -> bool {
+        match area {
+            Area::Shortcut => self.hovered_shortcut == Some(entry_index),
+            Area::RowEntries => self.hovered_row == Some(entry_index),
+        }
     }
 }
 
@@ -155,6 +198,9 @@ impl Tab {
     }
     pub fn entries(&self) -> &[DirInfo] {
         &self.loaded_entries.entries
+    }
+    pub fn expanded(&self) -> bool {
+        self.loaded_entries.expanded
     }
 }
 
@@ -198,8 +244,8 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::DragReleased => drag_released(state),
         Message::HoverTarget(target) => hover_target(target, state),
         Message::MoveDone(result) => move_done(result, state),
-        Message::RowHoverStart(index, is_dir) => row_hover_start(state, index, is_dir),
-        Message::RowHoverEnd(index) => row_hover_end(state, index),
+        Message::RowHoverStart(index, is_dir, area) => row_hover_start(state, index, is_dir, area),
+        Message::RowHoverEnd(index, area) => row_hover_end(state, index, area),
         Message::RenameToggle => rename_toggle(state),
         Message::RenameFieldUpdate(field) => rename_field_update(state, field),
         Message::RenameGo => rename_go(state),
@@ -224,11 +270,17 @@ fn sidebar_view<'a>(state: &'a State) -> Element<'a, Message> {
     let shortcut_buttons = state.shortcut_dirs.iter().enumerate().fold(
         column![search_everything],
         |col, (index, (_, merged_name))| {
+            let is_hovered = state.is_hovered(index, Area::Shortcut);
+            let is_drop_target =
+                matches!(state.hovered_target, Some(DropTarget::Shortcut(i)) if i == index)
+                    && state.dragging.is_some();
             col.push(
-                button(text(merged_name))
-                    .style(secondary_button)
-                    .width(Length::Fill)
-                    .on_press(Message::GoToDir(GoToMethod::Shortcut(index))),
+                mouse_area(
+                    container(text(merged_name).size(18)).style(shortcut_style(is_hovered, is_drop_target)).width(Length::Fill),
+                )
+                .on_enter(Message::RowHoverStart(index, true, Area::Shortcut))
+                .on_exit(Message::RowHoverEnd(index, Area::Shortcut))
+                .on_press(Message::GoToDir(GoToMethod::Shortcut(index))),
             )
         },
     );
@@ -265,66 +317,19 @@ fn file_view(state: &State) -> Element<'_, Message> {
                 .spacing(50)
                 .align_y(iced::Alignment::Center);
 
-                let is_pressed = state
-                    .dragging
-                    .as_ref()
-                    .is_some_and(|d| d.source_tab == state.current_tab && d.source_path == index);
-                let is_hovered = state.hovered_row == Some(index);
+                let is_pressed = state.is_pressed(index, Area::RowEntries);
+                let is_hovered = state.is_hovered(index, Area::RowEntries);
                 let entry_button =
                     mouse_area(container(entry_row).style(row_style(is_hovered, is_pressed)))
                         .on_press(Message::PressStart(index, entry.is_dir))
-                        .on_enter(Message::RowHoverStart(index, entry.is_dir))
-                        .on_exit(Message::RowHoverEnd(index));
+                        .on_enter(Message::RowHoverStart(
+                            index,
+                            entry.is_dir,
+                            Area::RowEntries,
+                        ))
+                        .on_exit(Message::RowHoverEnd(index, Area::RowEntries));
 
-                let entry_with_menu = ContextMenu::new(entry_button, move || {
-                    let mut column = column![
-                        button("Open")
-                            .on_press(Message::ContextMenuAction(index, EntryAction::Open))
-                            .style(secondary_button)
-                            .width(Length::Fill),
-                        button("Copy Absolute Path")
-                            .style(secondary_button)
-                            .on_press(Message::ContextMenuAction(
-                                index,
-                                EntryAction::CopyAbsolutePath
-                            ))
-                            .width(Length::Fill),
-                        button("Rename")
-                            .style(secondary_button)
-                            .on_press(Message::ContextMenuAction(index, EntryAction::Rename))
-                            .width(Length::Fill),
-                        button("Delete")
-                            .style(danger_button)
-                            .on_press(Message::ContextMenuAction(index, EntryAction::Delete))
-                            .width(Length::Fill),
-                    ]
-                    .width(Length::Fixed(150.0));
-                    if !entry.is_dir {
-                        column = column.push(
-                            button(text("Open File Location"))
-                                .on_press(Message::ContextMenuAction(
-                                    index,
-                                    EntryAction::OpenFileLocation,
-                                ))
-                                .style(secondary_button)
-                                .width(Length::Fill),
-                        )
-                    }
-                    if entry.is_dir {
-                        column = column.push(
-                            button(text("Open in Terminal"))
-                                .on_press(Message::ContextMenuAction(
-                                    index,
-                                    EntryAction::OpenInTerminal,
-                                ))
-                                .style(secondary_button)
-                                .width(Length::Fill),
-                        )
-                    }
-
-                    column.into()
-                })
-                .style(menu_container);
+                let entry_with_menu = inst_context_menu(index, entry_button, entry.is_dir);
 
                 column.push(entry_with_menu)
             })
@@ -392,6 +397,63 @@ fn file_view(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+fn inst_context_menu<'a>(
+    entry_index: usize,
+    button: iced::widget::MouseArea<'a, Message>,
+    is_dir: bool,
+) -> Element<'a, Message> {
+    let cx = ContextMenu::new(button, move || {
+        let mut column = column![
+            iced::widget::button("Open")
+                .on_press(Message::ContextMenuAction(entry_index, EntryAction::Open))
+                .style(secondary_button)
+                .width(Length::Fill),
+            iced::widget::button("Copy Absolute Path")
+                .style(secondary_button)
+                .on_press(Message::ContextMenuAction(
+                    entry_index,
+                    EntryAction::CopyAbsolutePath
+                ))
+                .width(Length::Fill),
+            iced::widget::button("Rename")
+                .style(secondary_button)
+                .on_press(Message::ContextMenuAction(entry_index, EntryAction::Rename))
+                .width(Length::Fill),
+            iced::widget::button("Delete")
+                .style(danger_button)
+                .on_press(Message::ContextMenuAction(entry_index, EntryAction::Delete))
+                .width(Length::Fill),
+        ]
+        .width(Length::Fixed(150.0));
+        if !is_dir {
+            column = column.push(
+                iced::widget::button(text("Open File Location"))
+                    .on_press(Message::ContextMenuAction(
+                        entry_index,
+                        EntryAction::OpenFileLocation,
+                    ))
+                    .style(secondary_button)
+                    .width(Length::Fill),
+            )
+        }
+        if is_dir {
+            column = column.push(
+                iced::widget::button(text("Open in Terminal"))
+                    .on_press(Message::ContextMenuAction(
+                        entry_index,
+                        EntryAction::OpenInTerminal,
+                    ))
+                    .style(secondary_button)
+                    .width(Length::Fill),
+            )
+        }
+
+        column.into()
+    })
+    .style(menu_container);
+    cx.into()
+}
+
 fn go_to_dir(state: &mut State, method: GoToMethod) -> Task<Message> {
     let now = if DEBUG_MODE {
         Some(Instant::now())
@@ -433,8 +495,10 @@ fn update_content(state: &mut State, res: Result<LoadedEntries, CError>) -> Task
         state.current_tab_mut().loaded_entries = result;
         state.current_tab_mut().search_field.clear();
         state.current_tab_mut().search_results_displayed = false;
+        //let sorted_by = state.current_tab().sorted_by.clone();
         state.current_tab_mut().sorted_by = SortBy::None;
         state.scroll_offset = 0.0;
+        //return Task::done(Message::SortBy(sorted_by));
     }
     Task::none()
 }
@@ -529,23 +593,44 @@ pub fn theme(state: &State) -> Theme {
     state.theme.clone()
 }
 
-fn row_hover_start(state: &mut State, index: usize, is_dir: bool) -> Task<Message> {
-    state.hovered_row = Some(index);
-    if is_dir {
-        state.hovered_target = Some(DropTarget::FolderRow {
-            tab: state.current_tab,
-            index,
-        });
+fn row_hover_start(state: &mut State, index: usize, is_dir: bool, area: Area) -> Task<Message> {
+    match area {
+        Area::Shortcut => {
+            state.hovered_shortcut = Some(index);
+            state.hovered_target = Some(DropTarget::Shortcut(index));
+        }
+        Area::RowEntries => {
+            state.hovered_row = Some(index);
+            if is_dir {
+                state.hovered_target = Some(DropTarget::FolderRow {
+                    tab: state.current_tab,
+                    index,
+                });
+            }
+        }
     }
     Task::none()
 }
 
-fn row_hover_end(state: &mut State, index: usize) -> Task<Message> {
-    if state.hovered_row == Some(index) {
-        state.hovered_row = None;
-    }
-    if matches!(state.hovered_target, Some(DropTarget::FolderRow { index: i, .. }) if i == index) {
-        state.hovered_target = None;
+fn row_hover_end(state: &mut State, index: usize, area: Area) -> Task<Message> {
+    match area {
+        Area::Shortcut => {
+            if state.hovered_shortcut == Some(index) {
+                state.hovered_shortcut = None;
+            }
+            if matches!(state.hovered_target, Some(DropTarget::Shortcut(i)) if i == index) {
+                state.hovered_target = None;
+            }
+        }
+        Area::RowEntries => {
+            if state.hovered_row == Some(index) {
+                state.hovered_row = None;
+            }
+            if matches!(state.hovered_target, Some(DropTarget::FolderRow { index: i, .. }) if i == index)
+            {
+                state.hovered_target = None;
+            }
+        }
     }
     Task::none()
 }
